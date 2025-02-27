@@ -3,6 +3,7 @@ pragma solidity ^0.8.19;
 
 import {STP} from "../src/STP.sol";
 import {Test} from "../lib/forge-std/src/Test.sol";
+import {console} from "forge-std/console.sol";
 
 contract STPTest is Test {
     STP internal stp;
@@ -23,6 +24,7 @@ contract STPTest is Test {
     event Transferred(bytes32 indexed transferId);
 
     function setUp() public payable {
+        vm.createSelectFork(vm.rpcUrl("main")); // Ethereum mainnet fork.
         stp = new STP();
         token = new MockERC20("Test Token", "TEST", 18);
 
@@ -55,6 +57,14 @@ contract STPTest is Test {
         assertEq(stp.balanceOf(user2, uint256(0) | (DELAY << 160)), AMOUNT);
 
         vm.stopPrank();
+    }
+
+    function testURI() public view {
+        address _token = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
+        uint256 delay = 86400;
+        uint256 id = uint256(uint160(_token)) | (delay << 160);
+        string memory uri = stp.uri(id);
+        console.log(uri);
     }
 
     // Test ERC20 deposit
