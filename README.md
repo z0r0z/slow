@@ -1,10 +1,8 @@
-# [zenplate](https://github.com/z0r0z/zenplate)  [![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL-black.svg)](https://opensource.org/license/agpl-v3/) [![solidity](https://img.shields.io/badge/solidity-%5E0.8.25-black)](https://docs.soliditylang.org/en/v0.8.25/) [![Foundry](https://img.shields.io/badge/Built%20with-Foundry-000000.svg)](https://getfoundry.sh/) ![tests](https://github.com/z0r0z/zenplate/actions/workflows/ci.yml/badge.svg)
+# [STP](https://github.com/z0r0z/STP)  [![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL-black.svg)](https://opensource.org/license/agpl-v3/) [![solidity](https://img.shields.io/badge/solidity-%5E0.8.28-black)](https://docs.soliditylang.org/en/v0.8.28/) [![Foundry](https://img.shields.io/badge/Built%20with-Foundry-000000.svg)](https://getfoundry.sh/) ![tests](https://github.com/z0r0z/STP/actions/workflows/ci.yml/badge.svg)
 
-Simpler foundry template.
+Safe Transfer Protocol. Wrap and send ETH or ERC20 tokens with timelock and guardian.
 
 ## Getting Started
-
-Click [`use this template`](https://github.com/z0r0z/zenplate/generate) to start.
 
 Run: `curl -L https://foundry.paradigm.xyz | bash && source ~/.bashrc && foundryup`
 
@@ -22,15 +20,10 @@ You can edit the CI script in [.github/workflows/ci.yml](./.github/workflows/ci.
 lib
 ├─ forge-std — https://github.com/foundry-rs/forge-std
 src
-├─ Tester — Tester Contract
+├─ STP — Protocol Contract
 test
-└─ Tester.t - Test Contract
+└─ STP.t - Test Protocol Contract
 ```
-
-## Notable Mentions
-
-- [femplate](https://github.com/refcell/femplate)
-- [prb-foundry-template](https://github.dev/PaulRBerg/foundry-template)
 
 ## Disclaimer
 
