@@ -383,14 +383,4 @@ contract STP is ERC1155, ReentrancyGuard {
             return string(result);
         }
     }
-
-    function _hexChar(uint8 value) internal pure returns (bytes1) {
-        unchecked {
-            if (value < 10) {
-                return bytes1(uint8(bytes1("0")) + value);
-            } else {
-                return bytes1(uint8(bytes1("a")) + value - 10);
-            }
-        }
-    }
 }
