@@ -30,11 +30,11 @@ contract STP is ERC1155, ReentrancyGuard {
     error Timelocked();
 
     struct PendingTransfer {
+        uint96 timestamp;
         address from;
         address to;
         uint256 id;
         uint256 amount;
-        uint256 timestamp;
     }
 
     uint256 internal constant GUARDIAN_COOLDOWN = 1 days; // Default to avoid flash attacks.
@@ -228,7 +228,7 @@ contract STP is ERC1155, ReentrancyGuard {
         unchecked {
             pt.amount += amount;
         }
-        pt.timestamp = timestamp;
+        pt.timestamp = uint96(timestamp);
     }
 
     // URI HELPERS
