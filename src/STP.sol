@@ -222,13 +222,13 @@ contract STP is ERC1155, ReentrancyGuard {
         uint256 timestamp
     ) internal {
         PendingTransfer storage pt = pendingTransfers[transferId];
+        pt.timestamp = uint96(timestamp);
         pt.from = from;
         pt.to = to;
         pt.id = id;
         unchecked {
             pt.amount += amount;
         }
-        pt.timestamp = uint96(timestamp);
     }
 
     // URI HELPERS
