@@ -1,6 +1,6 @@
-# [STP](https://github.com/z0r0z/STP)  [![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL-black.svg)](https://opensource.org/license/agpl-v3/) [![solidity](https://img.shields.io/badge/solidity-%5E0.8.28-black)](https://docs.soliditylang.org/en/v0.8.28/) [![Foundry](https://img.shields.io/badge/Built%20with-Foundry-000000.svg)](https://getfoundry.sh/) ![tests](https://github.com/z0r0z/STP/actions/workflows/ci.yml/badge.svg)
+# [SLOW](https://github.com/z0r0z/slow)  [![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL-black.svg)](https://opensource.org/license/agpl-v3/) [![solidity](https://img.shields.io/badge/solidity-%5E0.8.28-black)](https://docs.soliditylang.org/en/v0.8.28/) [![Foundry](https://img.shields.io/badge/Built%20with-Foundry-000000.svg)](https://getfoundry.sh/) ![tests](https://github.com/z0r0z/slow/actions/workflows/ci.yml/badge.svg)
 
-Safe Transfer Protocol. Wrap and send ETH or ERC20 tokens with timelock and guardian.
+SLOW. Wrap and send ETH or ERC20 tokens with timelock and guardian.
 
 ## Getting Started
 
@@ -20,9 +20,9 @@ You can edit the CI script in [.github/workflows/ci.yml](./.github/workflows/ci.
 lib
 ├─ forge-std — https://github.com/foundry-rs/forge-std
 src
-├─ STP — Protocol Contract
+├─ SLOW — Protocol Contract
 test
-└─ STP.t - Test Protocol Contract
+└─ SLOW.t - Test Protocol Contract
 ```
 
 ## Disclaimer
