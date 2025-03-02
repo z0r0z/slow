@@ -66,11 +66,11 @@ contract SLOW is ERC1155, ReentrancyGuard {
     // METADATA
 
     function name() public pure returns (string memory) {
-        return "SLOW";
+        return "ZZZ";
     }
 
     function symbol() public pure returns (string memory) {
-        return "SLOW";
+        return "ZZZ";
     }
 
     function uri(uint256 id) public view override(ERC1155) returns (string memory) {
@@ -307,7 +307,6 @@ contract SLOW is ERC1155, ReentrancyGuard {
                                 '<line x1="20" y1="50" x2="280" y2="50" stroke="white" stroke-width="1"/>',
                                 '<text x="20" y="35" font-family="Helvetica, Arial, sans-serif" font-size="24" fill="white">SLOW</text>',
                                 // Token address:
-                                '<text x="150" y="85" font-family="Helvetica, Arial, sans-serif" font-size="14" text-anchor="middle" fill="white">Address:</text>',
                                 '<text x="150" y="105" font-family="monospace" font-size="10" text-anchor="middle" fill="white">',
                                 addressPart1,
                                 "</text>",
@@ -322,17 +321,51 @@ contract SLOW is ERC1155, ReentrancyGuard {
                                     )
                                     : "",
                                 // Token name and symbol:
-                                '<text x="150" y="145" font-family="Helvetica, Arial, sans-serif" font-size="14" text-anchor="middle" fill="white">Token:</text>',
                                 '<text x="150" y="165" font-family="monospace" font-size="12" text-anchor="middle" fill="white">',
                                 tokenName,
                                 " (",
                                 tokenSymbol,
                                 ")</text>",
-                                // Delay in seconds:
-                                '<text x="150" y="195" font-family="Helvetica, Arial, sans-serif" font-size="14" text-anchor="middle" fill="white">Time Lock:</text>',
+                                // Main human-readable time display (e.g., "2 days" or "3 hours"):
                                 '<text x="150" y="215" font-family="monospace" font-size="12" text-anchor="middle" fill="white">',
-                                delay.toString(),
-                                " seconds</text>",
+                                delay >= 86400
+                                    ? string(
+                                        abi.encodePacked(
+                                            (delay / 86400).toString(),
+                                            (delay / 86400 == 1) ? " day" : " days"
+                                        )
+                                    )
+                                    : delay >= 3600
+                                        ? string(
+                                            abi.encodePacked(
+                                                (delay / 3600).toString(),
+                                                (delay / 3600 == 1) ? " hour" : " hours"
+                                            )
+                                        )
+                                        : delay >= 60
+                                            ? string(
+                                                abi.encodePacked(
+                                                    (delay / 60).toString(),
+                                                    (delay / 60 == 1) ? " minute" : " minutes"
+                                                )
+                                            )
+                                            : string(
+                                                abi.encodePacked(
+                                                    delay.toString(), (delay == 1) ? " second" : " seconds"
+                                                )
+                                            ),
+                                "</text>",
+                                // Only add the subtitle with exact seconds if the delay isn't already in seconds:
+                                delay > 60
+                                    ? string(
+                                        abi.encodePacked(
+                                            '<text x="150" y="230" font-family="monospace" font-size="8" text-anchor="middle" fill="#888888">',
+                                            delay.toString(),
+                                            " seconds",
+                                            "</text>"
+                                        )
+                                    )
+                                    : "",
                                 // Command symbol in bottom right:
                                 '<text x="270" y="280" font-family="monospace" font-size="16" text-anchor="end" fill="white">',
                                 unicode"⌘",

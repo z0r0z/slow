@@ -15,6 +15,7 @@ contract SLOWTest is Test {
     address internal guardian;
 
     address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+    address constant DAI = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
 
     uint256 internal constant AMOUNT = 1 ether;
     uint96 internal constant DELAY = 1 days;
@@ -712,6 +713,53 @@ contract SLOWTest is Test {
         console.log("Token URI:", tokenURI);
 
         vm.stopPrank();
+    }
+
+    function testURIWithDifferentDelays() public {
+        // Test with ETH
+        console.log("\n=== ETH URIs ===");
+        testTokenURIWithDelay(address(0), 1); // 1 second
+        testTokenURIWithDelay(address(0), 30); // 30 seconds
+        testTokenURIWithDelay(address(0), 60); // 1 minute
+        testTokenURIWithDelay(address(0), 300); // 5 minutes
+        testTokenURIWithDelay(address(0), 3600); // 1 hour
+        testTokenURIWithDelay(address(0), 7200); // 2 hours
+        testTokenURIWithDelay(address(0), 86400); // 1 day
+        testTokenURIWithDelay(address(0), 172800); // 2 days
+        testTokenURIWithDelay(address(0), 604800); // 1 week
+        testTokenURIWithDelay(address(0), 31536000); // 1 year
+
+        // Test with USDC
+        console.log("\n=== USDC URIs ===");
+        testTokenURIWithDelay(USDC, 1); // 1 second
+        testTokenURIWithDelay(USDC, 60); // 1 minute
+        testTokenURIWithDelay(USDC, 3600); // 1 hour
+        testTokenURIWithDelay(USDC, 86400); // 1 day
+        testTokenURIWithDelay(USDC, 2592000); // 30 days
+
+        // Test with DAI
+        console.log("\n=== DAI URIs ===");
+        testTokenURIWithDelay(DAI, 1); // 1 second
+        testTokenURIWithDelay(DAI, 60); // 1 minute
+        testTokenURIWithDelay(DAI, 3600); // 1 hour
+        testTokenURIWithDelay(DAI, 86400); // 1 day
+        testTokenURIWithDelay(DAI, 2592000); // 30 days
+        testTokenURIWithDelay(DAI, 2592001); // 30 days 1 second
+    }
+
+    function testTokenURIWithDelay(address token, uint96 delay) internal {
+        // Create ID with the token and delay
+        uint256 id = uint256(uint160(token)) | (uint256(delay) << 160);
+
+        // Get the URI from the contract
+        string memory tokenURI = slow.uri(id);
+
+        // Log the token type, delay, and URI
+        string memory tokenName =
+            token == address(0) ? "ETH" : token == USDC ? "USDC" : token == DAI ? "DAI" : "Unknown";
+
+        console.log("\nToken: %s, Delay: %s seconds", tokenName, delay);
+        console.log("URI: %s", tokenURI);
     }
 }
 
