@@ -125,7 +125,7 @@ contract SLOW is ERC1155, ReentrancyGuard {
     {
         if (msg.value != 0) {
             amount = msg.value;
-            delete token; // TO DO
+            delete token;
         } else {
             token.safeTransferFrom(msg.sender, address(this), amount);
         }
@@ -163,13 +163,14 @@ contract SLOW is ERC1155, ReentrancyGuard {
         unlockedBalances[from][id] -= amount;
 
         unchecked {
-            require(
-                guardians[from] == address(0)
-                    || guardianApproved[uint256(
+            if (guardians[from] != address(0)) {
+                require(
+                    guardianApproved[uint256(
                         keccak256(abi.encodePacked(from, to, id, amount, ++nonces[from]))
                     )],
-                GuardianApprovalRequired()
-            );
+                    GuardianApprovalRequired()
+                );
+            }
 
             _burn(msg.sender, from, id, amount);
 
