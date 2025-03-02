@@ -66,15 +66,75 @@ contract SLOW is ERC1155, ReentrancyGuard {
     // METADATA
 
     function name() public pure returns (string memory) {
-        return "ZZZ";
+        return "SLOW";
     }
 
     function symbol() public pure returns (string memory) {
-        return "ZZZ";
+        return "SLOW";
     }
 
     function uri(uint256 id) public view override(ERC1155) returns (string memory) {
         return _createURI(id);
+    }
+
+    // VIEWERS
+
+    function predictTransferId(address from, address to, uint256 id, uint256 amount)
+        public
+        view
+        returns (uint256)
+    {
+        unchecked {
+            return uint256(keccak256(abi.encodePacked(from, to, id, amount, nonces[from] + 1)));
+        }
+    }
+
+    function decodeId(uint256 id) public pure returns (address token, uint256 delay) {
+        (token, delay) = (address(uint160(id)), id >> 160);
+    }
+
+    function encodeId(address token, uint256 delay) public pure returns (uint256 id) {
+        id = uint256(uint160(token)) | (uint256(delay) << 160);
+    }
+
+    function canReverseTransfer(uint256 transferId)
+        public
+        view
+        returns (bool canReverse, string memory reason)
+    {
+        unchecked {
+            PendingTransfer storage pt = pendingTransfers[transferId];
+
+            if (pt.timestamp == 0) return (false, "Transfer does not exist");
+
+            if (block.timestamp > pt.timestamp + (pt.id >> 160)) return (false, "Timelock expired");
+
+            return (true, "");
+        }
+    }
+
+    function isGuardianApprovalNeeded(address user, address to, uint256 id, uint256 amount)
+        public
+        view
+        returns (bool needed)
+    {
+        if (guardians[user] == address(0)) return false;
+
+        return !guardianApproved[uint256(
+            keccak256(abi.encodePacked(user, to, id, amount, nonces[user] + 1))
+        )];
+    }
+
+    function canChangeGuardian(address user)
+        public
+        view
+        returns (bool canChange, uint256 cooldownEndsAt)
+    {
+        unchecked {
+            if (lastGuardianChange[user] == 0) return (true, 0);
+            canChange = block.timestamp >= cooldownEndsAt;
+            cooldownEndsAt = lastGuardianChange[user] + GUARDIAN_COOLDOWN;
+        }
     }
 
     // GUARDIAN AUTH
