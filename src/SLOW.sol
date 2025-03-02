@@ -131,7 +131,7 @@ contract SLOW is ERC1155, ReentrancyGuard {
         }
 
         // Token in lower 160 bits, delay in upper 96 bits.
-        uint256 id = uint256(uint160(token)) | (delay << 160);
+        uint256 id = uint256(uint160(token)) | (uint256(delay) << 160);
 
         unchecked {
             transferId = uint256(

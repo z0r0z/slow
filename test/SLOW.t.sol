@@ -14,6 +14,8 @@ contract SLOWTest is Test {
     address internal user2;
     address internal guardian;
 
+    address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+
     uint256 internal constant AMOUNT = 1 ether;
     uint96 internal constant DELAY = 1 days;
 
@@ -42,6 +44,11 @@ contract SLOWTest is Test {
         token.mint(user2, 10 ether);
     }
 
+    // Helper function to calculate ID
+    function calculateId(address tokenAddress, uint96 delay) internal pure returns (uint256) {
+        return uint256(uint160(tokenAddress)) | (uint256(delay) << 160);
+    }
+
     // Test ETH deposit
     function testDepositETH() public {
         vm.startPrank(user1);
@@ -49,8 +56,8 @@ contract SLOWTest is Test {
         // Perform the deposit and capture the transfer ID
         slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
 
-        // Check if the deposit was successful
-        uint256 id = uint256(0) | (DELAY << 160);
+        // Calculate the corrected ID
+        uint256 id = calculateId(address(0), DELAY);
         assertEq(slow.balanceOf(user2, id), AMOUNT);
 
         // Check that balance is locked
@@ -64,7 +71,7 @@ contract SLOWTest is Test {
     function testDepositETHZeroDelay() public {
         vm.startPrank(user1);
 
-        uint256 id = uint256(uint160(address(0))); // ID with zero delay
+        uint256 id = calculateId(address(0), 0); // ID with zero delay
 
         // Perform the deposit
         slow.depositTo{value: AMOUNT}(address(0), user2, 0, 0, ""); // 0 delay
@@ -80,7 +87,7 @@ contract SLOWTest is Test {
     function testURI() public view {
         address _token = 0x6B175474E89094C44Da98b954EedeAC495271d0F; // DAI
         uint256 delay = 86400;
-        uint256 id = uint256(uint160(_token)) | (delay << 160);
+        uint256 id = calculateId(_token, uint96(delay));
         string memory uri = slow.uri(id);
         console.log(uri);
     }
@@ -89,7 +96,7 @@ contract SLOWTest is Test {
     function testDepositERC20() public {
         vm.startPrank(user1);
 
-        uint256 id = uint256(uint160(address(token))) | (DELAY << 160);
+        uint256 id = calculateId(address(token), DELAY);
 
         token.approve(address(slow), AMOUNT);
 
@@ -113,7 +120,7 @@ contract SLOWTest is Test {
         slow.depositTo{value: AMOUNT}(address(0), user1, 0, DELAY, "");
         vm.stopPrank();
 
-        uint256 id = uint256(0) | (DELAY << 160);
+        uint256 id = calculateId(address(0), DELAY);
         uint96 unlockTime = uint96(block.timestamp + DELAY);
 
         // Verify it's locked
@@ -145,7 +152,7 @@ contract SLOWTest is Test {
     function testUnlockMultipleDeposits() public {
         uint256 firstAmount = 0.5 ether;
         uint256 secondAmount = 0.5 ether;
-        uint256 id = uint256(0) | (DELAY << 160);
+        uint256 id = calculateId(address(0), DELAY);
 
         // First deposit
         vm.startPrank(user1);
@@ -180,8 +187,7 @@ contract SLOWTest is Test {
         // Setup - deposit with delay
         vm.startPrank(user1);
 
-        // We need to construct the ID correctly with delay embedded
-        uint256 id = uint256(0) | (DELAY << 160);
+        uint256 id = calculateId(address(0), DELAY);
         console.log("ID value:", id);
         console.log("Delay extracted from ID:", id >> 160);
 
@@ -222,7 +228,7 @@ contract SLOWTest is Test {
     function testTransferZeroDelay() public {
         // Setup - deposit with NO delay
         vm.startPrank(user1);
-        uint256 zeroDelayId = uint256(uint160(address(0))); // ID with zero delay
+        uint256 zeroDelayId = calculateId(address(0), 0); // ID with zero delay
         slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, ""); // Note: 0 delay
         vm.stopPrank();
 
@@ -258,7 +264,7 @@ contract SLOWTest is Test {
 
         // Setup - deposit with NO delay for simplicity
         vm.startPrank(user1);
-        uint256 zeroDelayId = uint256(uint160(address(0)));
+        uint256 zeroDelayId = calculateId(address(0), 0);
         slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, "");
         vm.stopPrank();
 
@@ -301,15 +307,15 @@ contract SLOWTest is Test {
         // Fix precedence issue in test
         require(block.timestamp <= timestamp + (id >> 160), "Time should be within window");
 
-        uint256 idWithoutDelay = uint256(0) | (DELAY << 160);
+        uint256 idWithDelay = calculateId(address(0), DELAY);
 
         // Reverse within delay period
         vm.prank(user1);
         slow.reverse(transferId);
 
         // Check balances after reversal
-        assertEq(slow.balanceOf(user2, idWithoutDelay), 0);
-        assertEq(slow.balanceOf(user1, idWithoutDelay), AMOUNT);
+        assertEq(slow.balanceOf(user2, idWithDelay), 0);
+        assertEq(slow.balanceOf(user1, idWithDelay), AMOUNT);
     }
 
     // Test reversal by approved operator
@@ -328,7 +334,7 @@ contract SLOWTest is Test {
         vm.prank(operator);
         slow.reverse(transferId);
 
-        uint256 id = uint256(0) | (DELAY << 160);
+        uint256 id = calculateId(address(0), DELAY);
 
         // Check balances after reversal
         assertEq(slow.balanceOf(user2, id), 0);
@@ -429,7 +435,7 @@ contract SLOWTest is Test {
         vm.prank(user1);
         slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, ""); // Using zero delay for simplicity
 
-        uint256 id = uint256(uint160(address(0))); // Zero delay ID
+        uint256 id = calculateId(address(0), 0); // Zero delay ID
 
         // Calculate the expected transferId - need to get nonce first
         uint256 currentNonce = slow.nonces(user1);
@@ -466,7 +472,7 @@ contract SLOWTest is Test {
         uint256 currentNonce = slow.nonces(user1);
 
         // Calculate a transferId
-        uint256 id = uint256(uint160(address(0)));
+        uint256 id = calculateId(address(0), 0);
         uint256 transferId =
             uint256(keccak256(abi.encodePacked(user1, user2, id, AMOUNT, currentNonce + 1)));
 
@@ -483,7 +489,7 @@ contract SLOWTest is Test {
         slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, "");
         vm.stopPrank();
 
-        uint256 id = uint256(uint160(address(0)));
+        uint256 id = calculateId(address(0), 0);
 
         // Withdraw
         uint256 balanceBefore = user2.balance;
@@ -504,7 +510,7 @@ contract SLOWTest is Test {
         slow.depositTo{value: AMOUNT}(address(0), user1, 0, DELAY, "");
         vm.stopPrank();
 
-        uint256 id = uint256(0) | (DELAY << 160);
+        uint256 id = calculateId(address(0), DELAY);
 
         // Try to withdraw without unlocking - should revert with underflow
         vm.startPrank(user1);
@@ -537,7 +543,7 @@ contract SLOWTest is Test {
         vm.prank(user1);
         slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, ""); // Zero delay for simplicity
 
-        uint256 id = uint256(uint160(address(0)));
+        uint256 id = calculateId(address(0), 0);
 
         // Get current nonce
         uint256 currentNonce = slow.nonces(user1);
@@ -576,7 +582,7 @@ contract SLOWTest is Test {
         slow.depositTo(address(token), user1, AMOUNT, 0, ""); // Zero delay for simplicity
         vm.stopPrank();
 
-        uint256 id = uint256(uint160(address(token)));
+        uint256 id = calculateId(address(token), 0);
 
         // Check initial balances
         assertEq(slow.balanceOf(user1, id), AMOUNT);
@@ -599,7 +605,7 @@ contract SLOWTest is Test {
         slow.depositTo{value: AMOUNT}(address(0), user1, 0, DELAY, "");
         vm.stopPrank();
 
-        uint256 id = uint256(0) | (DELAY << 160);
+        uint256 id = calculateId(address(0), DELAY);
 
         // Try to transfer before unlocking - should fail
         vm.startPrank(user1);
@@ -616,7 +622,7 @@ contract SLOWTest is Test {
 
         // Create test data for batch transfer
         uint256[] memory ids = new uint256[](1);
-        ids[0] = uint256(uint160(address(0)));
+        ids[0] = calculateId(address(0), 0);
 
         uint256[] memory amounts = new uint256[](1);
         amounts[0] = AMOUNT;
@@ -624,6 +630,87 @@ contract SLOWTest is Test {
         // Batch transfer should revert
         vm.expectRevert(SLOW.Unauthorized.selector);
         slow.safeBatchTransferFrom(user1, user2, ids, amounts, "");
+        vm.stopPrank();
+    }
+
+    function testETHDeposit() public {
+        vm.startPrank(user1);
+
+        // Perform deposit with delay
+        console.log("--- ETH Deposit with Delay ---");
+        console.log("Before deposit - user1 ETH balance:", user1.balance);
+
+        // Debug the ID calculation
+        uint256 expectedId = uint256(uint160(address(0))) | (DELAY << 160);
+        console.log("Expected ID for ETH with delay:", expectedId);
+        console.log("Token part (lower 160 bits):", uint160(address(0)));
+        console.log("Delay part (upper bits):", DELAY);
+
+        // Deposit ETH with delay
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+        console.log("Transfer ID from deposit:", transferId);
+
+        // Get the actual ID from the pending transfer
+        (,, address to, uint256 actualId, uint256 amount) = slow.pendingTransfers(transferId);
+        console.log("Actual ID from pending transfer:", actualId);
+        console.log("Token extracted from ID:", address(uint160(actualId)));
+        console.log("Delay extracted from ID:", actualId >> 160);
+
+        // Check token balances
+        console.log("User2 token balance after deposit:", slow.balanceOf(user2, actualId));
+        console.log(
+            "User2 locked balance:", slow.lockedBalances(user2, actualId, block.timestamp + DELAY)
+        );
+        console.log("User2 unlocked balance:", slow.unlockedBalances(user2, actualId));
+
+        // Check token URI
+        string memory tokenURI = slow.uri(actualId);
+        console.log("Token URI:", tokenURI);
+
+        vm.stopPrank();
+    }
+
+    // Test 2: USDC Deposit with Delay
+    function testUSDCDeposit() public {
+        vm.startPrank(user1);
+
+        console.log("--- USDC Deposit with Delay ---");
+
+        // For simplicity, mock the USDC balance and approval
+        // In reality, you'd need to interact with the actual USDC contract
+        vm.mockCall(
+            USDC,
+            abi.encodeWithSelector(0x23b872dd), // transferFrom selector
+            abi.encode(true)
+        );
+
+        // Debug the ID calculation
+        uint256 expectedId = uint256(uint160(USDC)) | (DELAY << 160);
+        console.log("Expected ID for USDC with delay:", expectedId);
+        console.log("Token part (lower 160 bits):", uint160(USDC));
+        console.log("Delay part (upper bits):", DELAY);
+
+        // Deposit USDC with delay
+        uint256 transferId = slow.depositTo(USDC, user2, AMOUNT, DELAY, "");
+        console.log("Transfer ID from deposit:", transferId);
+
+        // Get the actual ID from the pending transfer
+        (,,, uint256 actualId,) = slow.pendingTransfers(transferId);
+        console.log("Actual ID from pending transfer:", actualId);
+        console.log("Token extracted from ID:", address(uint160(actualId)));
+        console.log("Delay extracted from ID:", actualId >> 160);
+
+        // Check token balances
+        console.log("User2 token balance after deposit:", slow.balanceOf(user2, actualId));
+        console.log(
+            "User2 locked balance:", slow.lockedBalances(user2, actualId, block.timestamp + DELAY)
+        );
+        console.log("User2 unlocked balance:", slow.unlockedBalances(user2, actualId));
+
+        // Check token URI
+        string memory tokenURI = slow.uri(actualId);
+        console.log("Token URI:", tokenURI);
+
         vm.stopPrank();
     }
 }
