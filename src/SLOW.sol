@@ -132,8 +132,8 @@ contract SLOW is ERC1155, ReentrancyGuard {
     {
         unchecked {
             if (lastGuardianChange[user] == 0) return (true, 0);
-            canChange = block.timestamp >= cooldownEndsAt;
             cooldownEndsAt = lastGuardianChange[user] + GUARDIAN_COOLDOWN;
+            canChange = block.timestamp >= cooldownEndsAt;
         }
     }
 
