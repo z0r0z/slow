@@ -652,7 +652,7 @@ contract SLOWTest is Test {
         console.log("Transfer ID from deposit:", transferId);
 
         // Get the actual ID from the pending transfer
-        (,, address to, uint256 actualId, uint256 amount) = slow.pendingTransfers(transferId);
+        (,,, uint256 actualId,) = slow.pendingTransfers(transferId);
         console.log("Actual ID from pending transfer:", actualId);
         console.log("Token extracted from ID:", address(uint160(actualId)));
         console.log("Delay extracted from ID:", actualId >> 160);
@@ -715,7 +715,7 @@ contract SLOWTest is Test {
         vm.stopPrank();
     }
 
-    function testURIWithDifferentDelays() public {
+    function testURIWithDifferentDelays() public view {
         // Test with ETH
         console.log("\n=== ETH URIs ===");
         testTokenURIWithDelay(address(0), 1); // 1 second
@@ -747,16 +747,17 @@ contract SLOWTest is Test {
         testTokenURIWithDelay(DAI, 2592001); // 30 days 1 second
     }
 
-    function testTokenURIWithDelay(address token, uint96 delay) internal {
+    function testTokenURIWithDelay(address _token, uint96 delay) internal view {
         // Create ID with the token and delay
-        uint256 id = uint256(uint160(token)) | (uint256(delay) << 160);
+        uint256 id = uint256(uint160(_token)) | (uint256(delay) << 160);
 
         // Get the URI from the contract
         string memory tokenURI = slow.uri(id);
 
         // Log the token type, delay, and URI
-        string memory tokenName =
-            token == address(0) ? "ETH" : token == USDC ? "USDC" : token == DAI ? "DAI" : "Unknown";
+        string memory tokenName = _token == address(0)
+            ? "ETH"
+            : _token == USDC ? "USDC" : _token == DAI ? "DAI" : "Unknown";
 
         console.log("\nToken: %s, Delay: %s seconds", tokenName, delay);
         console.log("URI: %s", tokenURI);
