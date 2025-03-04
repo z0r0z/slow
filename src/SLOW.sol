@@ -32,8 +32,9 @@ contract SLOW is ERC1155, ReentrancyGuard {
 
     error GuardianCooldownNotElapsed();
     error GuardianApprovalRequired();
+    error TransferDoesNotExist();
     error TimelockNotExpired();
-    error TransferFinalized();
+    error TimelockExpired();
     error Unauthorized();
 
     struct PendingTransfer {
@@ -100,14 +101,16 @@ contract SLOW is ERC1155, ReentrancyGuard {
     function canReverseTransfer(uint256 transferId)
         public
         view
-        returns (bool canReverse, string memory reason)
+        returns (bool canReverse, bytes4 reason)
     {
         unchecked {
             PendingTransfer storage pt = pendingTransfers[transferId];
 
-            if (pt.timestamp == 0) return (false, "Transfer does not exist");
+            if (pt.timestamp == 0) return (false, TransferDoesNotExist.selector);
 
-            if (block.timestamp > pt.timestamp + (pt.id >> 160)) return (false, "Timelock expired");
+            if (block.timestamp > pt.timestamp + (pt.id >> 160)) {
+                return (false, TimelockExpired.selector);
+            }
 
             return (true, "");
         }
@@ -288,7 +291,7 @@ contract SLOW is ERC1155, ReentrancyGuard {
         PendingTransfer storage pt = pendingTransfers[transferId];
 
         unchecked {
-            require(block.timestamp <= pt.timestamp + (pt.id >> 160), TransferFinalized());
+            require(block.timestamp <= pt.timestamp + (pt.id >> 160), TimelockExpired());
         }
 
         if (msg.sender != pt.from) require(isApprovedForAll(pt.from, msg.sender), Unauthorized());

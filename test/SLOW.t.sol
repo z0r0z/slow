@@ -357,7 +357,7 @@ contract SLOWTest is Test {
 
         // Try to reverse after delay - should fail
         vm.startPrank(user1);
-        vm.expectRevert(SLOW.TransferFinalized.selector);
+        vm.expectRevert(SLOW.TimelockExpired.selector);
         slow.reverse(transferId);
         vm.stopPrank();
     }
