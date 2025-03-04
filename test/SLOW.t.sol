@@ -441,7 +441,7 @@ contract SLOWTest is Test {
         // Calculate the expected transferId - need to get nonce first
         uint256 currentNonce = slow.nonces(user1);
         uint256 transferId =
-            uint256(keccak256(abi.encodePacked(user1, user2, id, AMOUNT, currentNonce + 1)));
+            uint256(keccak256(abi.encodePacked(user1, user2, id, AMOUNT, currentNonce)));
 
         // Try to transfer without guardian approval - should fail
         vm.startPrank(user1);
@@ -475,7 +475,7 @@ contract SLOWTest is Test {
         // Calculate a transferId
         uint256 id = calculateId(address(0), 0);
         uint256 transferId =
-            uint256(keccak256(abi.encodePacked(user1, user2, id, AMOUNT, currentNonce + 1)));
+            uint256(keccak256(abi.encodePacked(user1, user2, id, AMOUNT, currentNonce)));
 
         // Unauthorized account attempts to approve
         vm.prank(user2); // Not the guardian
@@ -551,7 +551,7 @@ contract SLOWTest is Test {
 
         // Calculate the transferId that will be used on withdrawal
         uint256 withdrawalTransferId =
-            uint256(keccak256(abi.encodePacked(user1, user2, id, AMOUNT, currentNonce + 1)));
+            uint256(keccak256(abi.encodePacked(user1, user2, id, AMOUNT, currentNonce)));
 
         // Try to withdraw without guardian approval - should fail
         vm.startPrank(user1);

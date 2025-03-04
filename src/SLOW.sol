@@ -85,9 +85,7 @@ contract SLOW is ERC1155, ReentrancyGuard {
         view
         returns (uint256)
     {
-        unchecked {
-            return uint256(keccak256(abi.encodePacked(from, to, id, amount, nonces[from] + 1)));
-        }
+        return uint256(keccak256(abi.encodePacked(from, to, id, amount, nonces[from])));
     }
 
     function decodeId(uint256 id) public pure returns (address token, uint256 delay) {
@@ -166,10 +164,9 @@ contract SLOW is ERC1155, ReentrancyGuard {
 
     // BALANCE MANAGEMENT
 
-    function unlock(uint256 id, uint96 timestamp) public {
+    function unlock(uint256 id, uint256 timestamp) public {
         unchecked {
-            require(timestamp <= block.timestamp, TimelockNotExpired());
-
+            require(block.timestamp >= timestamp, TimelockNotExpired());
             uint256 amount = lockedBalances[msg.sender][id][timestamp];
             if (amount != 0) {
                 unlockedBalances[msg.sender][id] += amount;
@@ -199,7 +196,7 @@ contract SLOW is ERC1155, ReentrancyGuard {
 
         unchecked {
             transferId = uint256(
-                keccak256(abi.encodePacked(msg.sender, to, id, amount, ++nonces[msg.sender]))
+                keccak256(abi.encodePacked(msg.sender, to, id, amount, nonces[msg.sender]++))
             );
 
             pendingTransfers[transferId] =
@@ -230,7 +227,7 @@ contract SLOW is ERC1155, ReentrancyGuard {
             if (guardians[from] != address(0)) {
                 require(
                     guardianApproved[uint256(
-                        keccak256(abi.encodePacked(from, to, id, amount, ++nonces[from]))
+                        keccak256(abi.encodePacked(from, to, id, amount, nonces[from]++))
                     )],
                     GuardianApprovalRequired()
                 );
@@ -261,7 +258,7 @@ contract SLOW is ERC1155, ReentrancyGuard {
 
         unchecked {
             uint256 transferId =
-                uint256(keccak256(abi.encodePacked(from, to, id, amount, ++nonces[from])));
+                uint256(keccak256(abi.encodePacked(from, to, id, amount, nonces[from]++)));
 
             require(
                 guardians[from] == address(0) || guardianApproved[transferId],
