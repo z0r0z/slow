@@ -23,6 +23,7 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
     using MetadataReaderLib for address;
     using SafeTransferLib for address;
     using LibString for uint256;
+    using LibString for string;
 
     event Unlocked(address indexed user, uint256 indexed id, uint256 indexed amount);
     event TransferApproved(
@@ -165,8 +166,7 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
             require(pt.timestamp != 0, TransferDoesNotExist());
             uint256 id = pt.id;
             require(block.timestamp > pt.timestamp + (id >> 160), TimelockNotExpired());
-            uint256 amount = pt.amount;
-            address to = pt.to;
+            (uint256 amount, address to) = (pt.amount, pt.to); // Memoize optimization.
             unlockedBalances[to][id] += amount;
             delete pendingTransfers[transferId];
             emit Unlocked(to, id, amount);
@@ -346,8 +346,8 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
 
             // Split the address at the 22nd character (0x + 20 characters):
             if (bytes(addressStr).length > 22) {
-                addressPart1 = _substring(addressStr, 0, 22);
-                addressPart2 = _substring(addressStr, 22, bytes(addressStr).length - 22);
+                addressPart1 = addressStr.slice(0, 22);
+                addressPart2 = addressStr.slice(22, bytes(addressStr).length - 22);
             } else {
                 addressPart1 = addressStr;
             }
@@ -433,21 +433,6 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
                     )
                 )
             );
-        }
-    }
-
-    function _substring(string memory str, uint256 startIndex, uint256 length)
-        internal
-        pure
-        returns (string memory)
-    {
-        unchecked {
-            bytes memory strBytes = bytes(str);
-            bytes memory result = new bytes(length);
-            for (uint256 i; i != length; ++i) {
-                result[i] = strBytes[i + startIndex];
-            }
-            return string(result);
         }
     }
 
