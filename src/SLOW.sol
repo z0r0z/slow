@@ -4,6 +4,7 @@ pragma solidity ^0.8.19;
 import {Base64} from "@solady/src/utils/Base64.sol";
 import {ERC1155} from "@solady/src/tokens/ERC1155.sol";
 import {LibString} from "@soledge/src/utils/LibString.sol";
+import {Multicallable} from "@solady/src/utils/Multicallable.sol";
 import {SafeTransferLib} from "@solady/src/utils/SafeTransferLib.sol";
 import {ReentrancyGuard} from "@soledge/src/utils/ReentrancyGuard.sol";
 import {MetadataReaderLib} from "@solady/src/utils/MetadataReaderLib.sol";
@@ -18,7 +19,7 @@ import {MetadataReaderLib} from "@solady/src/utils/MetadataReaderLib.sol";
 ///      - Locked balances must be unlocked upon the expiry
 ///      - Only unlocked balances can be spent in transfer
 ///      - Guardian approval can also be added to transfer
-contract SLOW is ERC1155, ReentrancyGuard {
+contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
     using MetadataReaderLib for address;
     using SafeTransferLib for address;
     using LibString for uint256;
