@@ -117,11 +117,9 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
         view
         returns (bool needed)
     {
-        if (guardians[user] == address(0)) return false;
-
-        return !guardianApproved[uint256(
-            keccak256(abi.encodePacked(user, to, id, amount, nonces[user] + 1))
-        )];
+        return guardians[user] == address(0)
+            ? false
+            : !guardianApproved[uint256(keccak256(abi.encodePacked(user, to, id, amount, nonces[user])))];
     }
 
     function canChangeGuardian(address user)
@@ -165,12 +163,13 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
         unchecked {
             PendingTransfer storage pt = pendingTransfers[transferId];
             require(pt.timestamp != 0, TransferDoesNotExist());
-            require(block.timestamp > pt.timestamp + (pt.id >> 160), TimelockNotExpired());
+            uint256 id = pt.id;
+            require(block.timestamp > pt.timestamp + (id >> 160), TimelockNotExpired());
             uint256 amount = pt.amount;
             if (amount != 0) {
-                unlockedBalances[pt.to][pt.id] += amount;
+                unlockedBalances[pt.to][id] += amount;
                 delete pendingTransfers[transferId];
-                emit Unlocked(pt.to, pt.id, amount);
+                emit Unlocked(pt.to, id, amount);
             }
         }
     }
