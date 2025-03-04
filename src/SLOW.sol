@@ -167,11 +167,9 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
             require(block.timestamp > pt.timestamp + (id >> 160), TimelockNotExpired());
             uint256 amount = pt.amount;
             address to = pt.to;
-            if (amount != 0) {
-                unlockedBalances[to][id] += amount;
-                delete pendingTransfers[transferId];
-                emit Unlocked(to, id, amount);
-            }
+            unlockedBalances[to][id] += amount;
+            delete pendingTransfers[transferId];
+            emit Unlocked(to, id, amount);
         }
     }
 
