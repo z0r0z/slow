@@ -45,7 +45,7 @@ contract SLOW is ERC1155, ReentrancyGuard {
         uint256 amount;
     }
 
-    uint256 internal constant GUARDIAN_COOLDOWN = 1 days; // Default to avoid flash attacks.
+    uint256 internal constant _GUARDIAN_COOLDOWN = 1 days; // Default to avoid flash attacks.
 
     mapping(address user => mapping(uint256 id => mapping(uint256 timestamp => uint256))) public
         lockedBalances;
@@ -135,7 +135,7 @@ contract SLOW is ERC1155, ReentrancyGuard {
     {
         unchecked {
             if (lastGuardianChange[user] == 0) return (true, 0);
-            cooldownEndsAt = lastGuardianChange[user] + GUARDIAN_COOLDOWN;
+            cooldownEndsAt = lastGuardianChange[user] + _GUARDIAN_COOLDOWN;
             canChange = block.timestamp >= cooldownEndsAt;
         }
     }
@@ -145,11 +145,12 @@ contract SLOW is ERC1155, ReentrancyGuard {
     function setGuardian(address guardian) public {
         unchecked {
             // Check if cooldown period has elapsed:
-            require(
-                lastGuardianChange[msg.sender] == 0
-                    || block.timestamp >= lastGuardianChange[msg.sender] + GUARDIAN_COOLDOWN,
-                GuardianCooldownNotElapsed()
-            );
+            if (lastGuardianChange[msg.sender] != 0) {
+                require(
+                    block.timestamp >= lastGuardianChange[msg.sender] + _GUARDIAN_COOLDOWN,
+                    GuardianCooldownNotElapsed()
+                );
+            }
 
             // Update guardian and last change timestamp:
             lastGuardianChange[msg.sender] = block.timestamp;
