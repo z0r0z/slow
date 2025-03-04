@@ -22,8 +22,8 @@ import {MetadataReaderLib} from "@solady/src/utils/MetadataReaderLib.sol";
 contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
     using MetadataReaderLib for address;
     using SafeTransferLib for address;
+    using LibString for address;
     using LibString for uint256;
-    using LibString for string;
 
     event Unlocked(address indexed user, uint256 indexed id, uint256 indexed amount);
     event TransferApproved(
@@ -339,19 +339,6 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
         string memory tokenSymbol
     ) internal pure returns (string memory) {
         unchecked {
-            // Split the address into two parts for better display:
-            string memory addressStr = LibString.toHexStringChecksummed(token);
-            string memory addressPart1;
-            string memory addressPart2;
-
-            // Split the address at the 22nd character (0x + 20 characters):
-            if (bytes(addressStr).length > 22) {
-                addressPart1 = addressStr.slice(0, 22);
-                addressPart2 = addressStr.slice(22, bytes(addressStr).length - 22);
-            } else {
-                addressPart1 = addressStr;
-            }
-
             return string(
                 abi.encodePacked(
                     "data:image/svg+xml;base64,",
@@ -365,18 +352,8 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
                                 '<text x="20" y="35" font-family="Helvetica, Arial, sans-serif" font-size="24" fill="white">SLOW</text>',
                                 // Token address:
                                 '<text x="150" y="105" font-family="monospace" font-size="10" text-anchor="middle" fill="white">',
-                                addressPart1,
+                                token.toHexStringChecksummed(),
                                 "</text>",
-                                // Second part of address if needed:
-                                bytes(addressPart2).length != 0
-                                    ? string(
-                                        abi.encodePacked(
-                                            '<text x="150" y="120" font-family="monospace" font-size="10" text-anchor="middle" fill="white">',
-                                            addressPart2,
-                                            "</text>"
-                                        )
-                                    )
-                                    : "",
                                 // Token name and symbol:
                                 '<text x="150" y="165" font-family="monospace" font-size="12" text-anchor="middle" fill="white">',
                                 tokenName,
