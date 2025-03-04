@@ -48,9 +48,6 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
 
     uint256 internal constant _GUARDIAN_COOLDOWN = 1 days; // Default to avoid flash attacks.
 
-    mapping(address user => mapping(uint256 id => mapping(uint256 timestamp => uint256))) public
-        lockedBalances;
-
     mapping(address user => mapping(uint256 id => uint256)) public unlockedBalances;
 
     mapping(uint256 transferId => PendingTransfer) public pendingTransfers;
@@ -151,7 +148,6 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
                 );
             }
 
-            // Update guardian and last change timestamp:
             lastGuardianChange[msg.sender] = block.timestamp;
             emit GuardianSet(msg.sender, guardians[msg.sender] = guardian);
         }
@@ -165,14 +161,20 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
 
     // BALANCE MANAGEMENT
 
-    function unlock(uint256 id, uint256 timestamp) public {
+    function unlock(uint256 transferId) public {
         unchecked {
-            require(block.timestamp > timestamp, TimelockNotExpired());
-            uint256 amount = lockedBalances[msg.sender][id][timestamp];
+            PendingTransfer storage pt = pendingTransfers[transferId];
+            require(pt.timestamp != 0, TransferDoesNotExist());
+
+            uint256 delay = pt.id >> 160;
+            require(block.timestamp > pt.timestamp + delay, TimelockNotExpired());
+            require(msg.sender == pt.to, Unauthorized());
+
+            uint256 amount = pt.amount;
             if (amount != 0) {
-                unlockedBalances[msg.sender][id] += amount;
-                delete lockedBalances[msg.sender][id][timestamp];
-                emit Unlocked(msg.sender, id, amount);
+                unlockedBalances[pt.to][pt.id] += amount;
+                delete pendingTransfers[transferId];
+                emit Unlocked(pt.to, pt.id, amount);
             }
         }
     }
@@ -196,23 +198,20 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
         uint256 id = uint256(uint160(token)) | (uint256(delay) << 160);
 
         unchecked {
-            transferId = uint256(
-                keccak256(abi.encodePacked(msg.sender, to, id, amount, nonces[msg.sender]++))
-            );
-
-            pendingTransfers[transferId] =
-                PendingTransfer(uint96(block.timestamp), msg.sender, to, id, amount);
-
             _mint(to, id, amount, data);
 
-            // Add to locked or unlocked balance depending on delay:
             if (delay != 0) {
-                lockedBalances[to][id][block.timestamp + delay] += amount;
+                transferId = uint256(
+                    keccak256(abi.encodePacked(msg.sender, to, id, amount, nonces[msg.sender]++))
+                );
+
+                pendingTransfers[transferId] =
+                    PendingTransfer(uint96(block.timestamp), msg.sender, to, id, amount);
+
+                emit TransferPending(transferId, delay);
             } else {
                 unlockedBalances[to][id] += amount;
             }
-
-            emit TransferPending(transferId, delay);
         }
     }
 
@@ -258,28 +257,30 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
         unlockedBalances[from][id] -= amount;
 
         unchecked {
-            uint256 transferId =
-                uint256(keccak256(abi.encodePacked(from, to, id, amount, nonces[from]++)));
-
-            if (guardians[from] != address(0)) {
-                require(guardianApproved[transferId], GuardianApprovalRequired());
-            }
-
-            pendingTransfers[transferId] =
-                PendingTransfer(uint96(block.timestamp), from, to, id, amount);
-
             uint256 delay = id >> 160;
+            address guardian = guardians[from];
+            bool requiresDelayOrGuardian = guardian != address(0) || delay != 0;
 
-            // Add to locked or unlocked balance depending on delay:
-            if (delay != 0) {
-                lockedBalances[to][id][block.timestamp + delay] += amount;
+            if (requiresDelayOrGuardian) {
+                uint256 transferId =
+                    uint256(keccak256(abi.encodePacked(from, to, id, amount, nonces[from]++)));
+
+                if (guardian != address(0)) {
+                    require(guardianApproved[transferId], GuardianApprovalRequired());
+                }
+
+                if (delay != 0) {
+                    pendingTransfers[transferId] =
+                        PendingTransfer(uint96(block.timestamp), from, to, id, amount);
+                    emit TransferPending(transferId, delay);
+                } else {
+                    unlockedBalances[to][id] += amount;
+                }
             } else {
                 unlockedBalances[to][id] += amount;
             }
 
             super.safeTransferFrom(from, to, id, amount, data);
-
-            emit TransferPending(transferId, delay);
         }
     }
 

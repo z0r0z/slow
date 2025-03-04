@@ -61,9 +61,7 @@ contract SLOWTest is Test {
         uint256 id = calculateId(address(0), DELAY);
         assertEq(slow.balanceOf(user2, id), AMOUNT);
 
-        // Check that balance is locked
         assertEq(slow.unlockedBalances(user2, id), 0);
-        assertEq(slow.lockedBalances(user2, id, block.timestamp + DELAY), AMOUNT);
 
         vm.stopPrank();
     }
@@ -109,7 +107,6 @@ contract SLOWTest is Test {
 
         // Check that balance is locked
         assertEq(slow.unlockedBalances(user2, id), 0);
-        assertEq(slow.lockedBalances(user2, id, block.timestamp + DELAY), AMOUNT);
 
         vm.stopPrank();
     }
@@ -118,20 +115,18 @@ contract SLOWTest is Test {
     function testUnlock() public {
         // Setup - deposit with delay
         vm.startPrank(user1);
-        slow.depositTo{value: AMOUNT}(address(0), user1, 0, DELAY, "");
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user1, 0, DELAY, "");
         vm.stopPrank();
 
         uint256 id = calculateId(address(0), DELAY);
-        uint96 unlockTime = uint96(block.timestamp + DELAY);
 
         // Verify it's locked
-        assertEq(slow.lockedBalances(user1, id, unlockTime), AMOUNT);
         assertEq(slow.unlockedBalances(user1, id), 0);
 
         // Try to unlock before time - should revert
         vm.startPrank(user1);
         vm.expectRevert(SLOW.TimelockNotExpired.selector);
-        slow.unlock(id, unlockTime);
+        slow.unlock(transferId);
         vm.stopPrank();
 
         // Advance time past delay
@@ -139,47 +134,10 @@ contract SLOWTest is Test {
 
         // Now unlock should succeed
         vm.startPrank(user1);
-        vm.expectEmit(true, true, true, false);
-        emit Unlocked(user1, id, AMOUNT);
-        slow.unlock(id, unlockTime);
+        slow.unlock(transferId);
         vm.stopPrank();
 
         // Check balances after unlock
-        assertEq(slow.lockedBalances(user1, id, unlockTime), 0);
-        assertEq(slow.unlockedBalances(user1, id), AMOUNT);
-    }
-
-    // Test unlocking multiple deposits with same timelock
-    function testUnlockMultipleDeposits() public {
-        uint256 firstAmount = 0.5 ether;
-        uint256 secondAmount = 0.5 ether;
-        uint256 id = calculateId(address(0), DELAY);
-
-        // First deposit
-        vm.startPrank(user1);
-        slow.depositTo{value: firstAmount}(address(0), user1, 0, DELAY, "");
-        vm.stopPrank();
-
-        // Record the unlock time
-        uint96 unlockTime = uint96(block.timestamp + DELAY);
-
-        // Second deposit at the same time
-        vm.startPrank(user1);
-        slow.depositTo{value: secondAmount}(address(0), user1, 0, DELAY, "");
-        vm.stopPrank();
-
-        // Verify both amounts are locked at the same timestamp
-        assertEq(slow.lockedBalances(user1, id, unlockTime), AMOUNT); // 0.5 + 0.5 = 1.0 ether
-
-        // Advance time past delay
-        vm.warp(block.timestamp + DELAY + 1);
-
-        // Unlock both deposits at once
-        vm.startPrank(user1);
-        slow.unlock(id, unlockTime);
-        vm.stopPrank();
-
-        // Check unlocked balance has both deposits
         assertEq(slow.unlockedBalances(user1, id), AMOUNT);
     }
 
@@ -192,7 +150,7 @@ contract SLOWTest is Test {
         console.log("ID value:", id);
         console.log("Delay extracted from ID:", id >> 160);
 
-        slow.depositTo{value: AMOUNT}(address(0), user1, 0, DELAY, "");
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user1, 0, DELAY, "");
         vm.stopPrank();
 
         // Advance time past delay
@@ -201,10 +159,7 @@ contract SLOWTest is Test {
 
         // Unlock the balance
         vm.startPrank(user1);
-        slow.unlock(id, uint96(unlockTime));
-
-        // Save the current timestamp before transfer
-        uint256 transferTime = block.timestamp;
+        slow.unlock(transferId);
 
         // Now transfer should succeed
         slow.safeTransferFrom(user1, user2, id, AMOUNT, "");
@@ -217,7 +172,6 @@ contract SLOWTest is Test {
         // Since the delay comes from the ID itself, check recipient's unlocked/locked balances
         if (id >> 160 != 0) {
             // If there's a delay in the ID, it should be in locked balances
-            assertEq(slow.lockedBalances(user2, id, transferTime + (id >> 160)), AMOUNT);
             assertEq(slow.unlockedBalances(user2, id), 0);
         } else {
             // If there's no delay in the ID, it should be in unlocked balances
@@ -508,7 +462,7 @@ contract SLOWTest is Test {
     function testWithdrawalWithLockedTokens() public {
         // Setup - deposit with delay
         vm.startPrank(user1);
-        slow.depositTo{value: AMOUNT}(address(0), user1, 0, DELAY, "");
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user1, 0, DELAY, "");
         vm.stopPrank();
 
         uint256 id = calculateId(address(0), DELAY);
@@ -522,7 +476,7 @@ contract SLOWTest is Test {
         // Advance time and unlock
         vm.warp(block.timestamp + DELAY + 1);
         vm.prank(user1);
-        slow.unlock(id, uint96(block.timestamp - 1));
+        slow.unlock(transferId);
 
         // Now withdrawal should succeed
         uint256 balanceBefore = user2.balance;
@@ -659,9 +613,6 @@ contract SLOWTest is Test {
 
         // Check token balances
         console.log("User2 token balance after deposit:", slow.balanceOf(user2, actualId));
-        console.log(
-            "User2 locked balance:", slow.lockedBalances(user2, actualId, block.timestamp + DELAY)
-        );
         console.log("User2 unlocked balance:", slow.unlockedBalances(user2, actualId));
 
         // Check token URI
@@ -703,9 +654,6 @@ contract SLOWTest is Test {
 
         // Check token balances
         console.log("User2 token balance after deposit:", slow.balanceOf(user2, actualId));
-        console.log(
-            "User2 locked balance:", slow.lockedBalances(user2, actualId, block.timestamp + DELAY)
-        );
         console.log("User2 unlocked balance:", slow.unlockedBalances(user2, actualId));
 
         // Check token URI
