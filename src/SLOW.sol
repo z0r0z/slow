@@ -27,8 +27,8 @@ contract SLOW is ERC1155, ReentrancyGuard {
     event TransferApproved(
         address indexed guardian, address indexed user, uint256 indexed transferId
     );
+    event TransferPending(uint256 indexed transferId, uint256 indexed delay);
     event GuardianSet(address indexed user, address indexed guardian);
-    event Transferred(uint256 indexed transferId);
 
     error GuardianCooldownNotElapsed();
     error GuardianApprovalRequired();
@@ -211,7 +211,7 @@ contract SLOW is ERC1155, ReentrancyGuard {
                 unlockedBalances[to][id] += amount;
             }
 
-            emit Transferred(transferId);
+            emit TransferPending(transferId, delay);
         }
     }
 
@@ -278,7 +278,7 @@ contract SLOW is ERC1155, ReentrancyGuard {
 
             super.safeTransferFrom(from, to, id, amount, data);
 
-            emit Transferred(transferId);
+            emit TransferPending(transferId, delay);
         }
     }
 

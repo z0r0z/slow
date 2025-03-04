@@ -25,7 +25,7 @@ contract SLOWTest is Test {
         address indexed guardian, address indexed user, uint256 indexed transferId
     );
     event GuardianSet(address indexed user, address indexed guardian);
-    event Transferred(uint256 indexed transferId);
+    event TransferPending(uint256 indexed transferId, uint96 indexed delay);
 
     function setUp() public payable {
         vm.createSelectFork(vm.rpcUrl("main")); // Ethereum mainnet fork.
