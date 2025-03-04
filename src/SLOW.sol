@@ -166,7 +166,7 @@ contract SLOW is ERC1155, ReentrancyGuard {
 
     function unlock(uint256 id, uint256 timestamp) public {
         unchecked {
-            require(block.timestamp >= timestamp, TimelockNotExpired());
+            require(block.timestamp > timestamp, TimelockNotExpired());
             uint256 amount = lockedBalances[msg.sender][id][timestamp];
             if (amount != 0) {
                 unlockedBalances[msg.sender][id] += amount;
@@ -260,10 +260,9 @@ contract SLOW is ERC1155, ReentrancyGuard {
             uint256 transferId =
                 uint256(keccak256(abi.encodePacked(from, to, id, amount, nonces[from]++)));
 
-            require(
-                guardians[from] == address(0) || guardianApproved[transferId],
-                GuardianApprovalRequired()
-            );
+            if (guardians[from] != address(0)) {
+                require(guardianApproved[transferId], GuardianApprovalRequired());
+            }
 
             pendingTransfers[transferId] =
                 PendingTransfer(uint96(block.timestamp), from, to, id, amount);
