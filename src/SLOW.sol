@@ -281,17 +281,21 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
     // REVERSE
 
     function reverse(uint256 transferId) public {
-        PendingTransfer storage pt = pendingTransfers[transferId];
-
         unchecked {
+            PendingTransfer storage pt = pendingTransfers[transferId];
+
             require(block.timestamp <= pt.timestamp + (pt.id >> 160), TimelockExpired());
+
+            if (msg.sender != pt.from) {
+                require(isApprovedForAll(pt.from, msg.sender), Unauthorized());
+            }
+
+            unlockedBalances[pt.from][pt.id] += pt.amount;
+
+            _safeTransfer(address(0), pt.to, pt.from, pt.id, pt.amount, "");
+
+            delete pendingTransfers[transferId];
         }
-
-        if (msg.sender != pt.from) require(isApprovedForAll(pt.from, msg.sender), Unauthorized());
-
-        _safeTransfer(address(0), pt.to, pt.from, pt.id, pt.amount, "");
-
-        delete pendingTransfers[transferId];
     }
 
     // URI HELPERS
