@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>send slow ᯓ➤</title>
+        <link
+            rel="icon"
+            href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🐌</text></svg>"
+        />
+        <style></style>
+        <script defer src="/runtime.js"></script>
+        <script defer src="/main.js"></script>
+    </head>
+    <body>
+        <button class="wallet-btn" id="walletButton">Connect Wallet</button>
+        <div class="wallet hidden">
+            <div class="label"></div>
+            <div class="address"></div>
+            <button class="disconnect-button">Disconnect</button>
+        </div>
+        <div class="disconnected hidden">
+            <button class="connect-button">Connect Wallet</button>
+        </div>
+        <div class="back-button" id="backButton"></div>
+        <div class="container" id="buttonContainer">
+            <div class="box top-box" id="sendBox">SEND</div>
+            <div class="divider"></div>
+            <div class="box bottom-box" id="takeBox">TAKE</div>
+        </div>
+        <div class="crypto-grid" id="cryptoGrid">
+            <div
+                class="crypto-box crypto-eth"
+                id="ethBox"
+                data-token="0x0000000000000000000000000000000000000000"
+                data-symbol="ETH"
+            >
+                ETH
+            </div>
+            <div
+                class="crypto-box crypto-usdc"
+                id="usdcBox"
+                data-token="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+                data-symbol="USDC"
+            >
+                USDC
+            </div>
+            <div
+                class="crypto-box crypto-dai"
+                id="daiBox"
+                data-token="0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb"
+                data-symbol="DAI"
+            >
+                DAI
+            </div>
+            <div
+                class="crypto-box crypto-usdt"
+                id="usdtBox"
+                data-token="0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2"
+                data-symbol="USDT"
+            >
+                USDT
+            </div>
+        </div>
+        <div class="transfer-tabs" id="transferTabs">
+            <div class="transfer-tab active" id="outboundTab">Outbound</div>
+            <div class="transfer-tab" id="inboundTab">Inbound</div>
+        </div>
+        <div class="take-lines-container" id="takeLinesContainer"></div>
+        <div class="selector amount-selector" id="amountSelector">
+            <div class="options">
+                <div class="option amount-option" data-value="1">1</div>
+                <div class="option amount-option" data-value="10">10</div>
+                <div class="option amount-option" data-value="100">100</div>
+                <div
+                    class="option amount-option custom-input-option"
+                    id="customAmountOption"
+                >
+                    <div class="custom-input-display">???</div>
+                </div>
+            </div>
+        </div>
+        <div class="selector time-selector" id="timeSelector">
+            <div class="options">
+                <div
+                    class="option time-option"
+                    data-value="600"
+                    data-display="10 MIN"
+                >
+                    10 MIN
+                </div>
+                <div
+                    class="option time-option"
+                    data-value="3600"
+                    data-display="1 HOUR"
+                >
+                    1 HOUR
+                </div>
+                <div
+                    class="option time-option"
+                    data-value="86400"
+                    data-display="1 DAY"
+                >
+                    1 DAY
+                </div>
+                <div
+                    class="option time-option custom-input-option"
+                    id="customTimeOption"
+                >
+                    <div class="custom-input-display">CUSTOM</div>
+                </div>
+            </div>
+        </div>
+        <!-- Custom amount modal -->
+        <div class="custom-amount-modal" id="customAmountModal">
+            <div class="custom-amount-content">
+                <h3>Enter Custom Amount</h3>
+                <div class="custom-amount-input-container">
+                    <input
+                        type="number"
+                        class="custom-amount-input-value"
+                        id="customAmountInputModal"
+                        min="0.000001"
+                        step="any"
+                        placeholder="0"
+                    />
+                </div>
+                <button class="apply-button" id="applyCustomAmount">
+                    Apply
+                </button>
+            </div>
+        </div>
+        <!-- Custom time modal -->
+        <div class="custom-time-modal" id="customTimeModal">
+            <div class="custom-time-content">
+                <h3>Set Custom Time Delay</h3>
+                <div class="time-input-group">
+                    <div class="time-input-unit">
+                        <input
+                            type="number"
+                            class="time-input-value"
+                            id="daysInput"
+                            min="0"
+                            max="365"
+                            placeholder="0"
+                        />
+                        <label class="time-input-label">Days</label>
+                    </div>
+                    <div class="time-input-unit">
+                        <input
+                            type="number"
+                            class="time-input-value"
+                            id="hoursInput"
+                            min="0"
+                            max="23"
+                            placeholder="0"
+                        />
+                        <label class="time-input-label">Hours</label>
+                    </div>
+                    <div class="time-input-unit">
+                        <input
+                            type="number"
+                            class="time-input-value"
+                            id="minutesInput"
+                            min="0"
+                            max="59"
+                            placeholder="0"
+                        />
+                        <label class="time-input-label">Minutes</label>
+                    </div>
+                    <div class="time-input-unit">
+                        <input
+                            type="number"
+                            class="time-input-value"
+                            id="secondsInput"
+                            min="0"
+                            max="59"
+                            placeholder="0"
+                        />
+                        <label class="time-input-label">Seconds</label>
+                    </div>
+                </div>
+                <button class="apply-button" id="applyCustomTime">Apply</button>
+            </div>
+        </div>
+        <div class="confirmation-modal" id="confirmationModal">
+            <div class="modal-content" id="modalContent">
+                <div class="modal-summary" id="modalSummary"></div>
+                <input
+                    type="text"
+                    class="modal-input"
+                    id="recipientInput"
+                    placeholder="Enter recipient address or ENS"
+                />
+                <div class="ens-status" id="ensStatus"></div>
+                <button class="modal-button" id="confirmButton">
+                    CONFIRM SEND
+                </button>
+            </div>
+        </div>
+        <div class="approve-modal" id="approveModal">
+            <div class="approve-content">
+                <h3>Approve Token Spending</h3>
+                <p>
+                    Before proceeding, you need to approve SLOW to spend your
+                    tokens.
+                </p>
+                <div id="approveDetails" style="margin: 20px 0"></div>
+                <button class="modal-button" id="approveButton">APPROVE</button>
+            </div>
+        </div>
+        <div class="loading" id="loadingIndicator">
+            <div class="spinner"></div>
+            <div class="loading-text" id="loadingText">
+                Processing transaction...
+            </div>
+        </div>
+        <div class="toast" id="toastNotification"></div>
+        <script></script>
+    </body>
+</html>
