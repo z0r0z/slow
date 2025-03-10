@@ -29,13 +29,7 @@ const chains = [
     rpcUrl: `https://rpc.flashbots.net`,
   },
   {
-    id: 137,
-    token: "MATIC",
-    label: "Matic Mainnet",
-    rpcUrl: "https://matic-mainnet.chainstacklabs.com",
-  },
-  {
-    id: "0x2105",
+    id: 8453,
     token: "ETH",
     label: "Base",
     rpcUrl: "https://mainnet.base.org",
@@ -52,8 +46,8 @@ const appMetadata = {
     { name: "MetaMask", url: "https://metamask.io" },
   ],
 };
-let onboard;
 
+let onboard;
 if (!onboard) {
   onboard = Onboard({
     wallets,

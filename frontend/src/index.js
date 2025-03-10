@@ -118,16 +118,23 @@ async function handleConnectWallet() {
     
     // Update UI
     if (result.ensName) {
-      elements.$label.innerHTML = `Connected Wallet: ${result.label}`;
+      elements.$label.innerHTML = `${result.label}`;
       elements.walletButton.textContent = result.ensName;
     } else {
-      elements.$label.innerHTML = `Connected Wallet: ${result.label}`;
+      elements.$label.innerHTML = `${result.label}`;
       elements.walletButton.textContent = formatAddress(result.address);
     }
     
     elements.$address.innerHTML = formatAddress(result.address);
     elements.$wallet.classList.remove("hidden");
     elements.$disconnected.classList.add("hidden");
+    
+    // Force update the wallet button text
+    const walletBtn = document.getElementById("walletButton");
+    if (walletBtn) {
+      walletBtn.textContent = result.ensName || formatAddress(result.address);
+      console.log("Updated wallet button text to:", walletBtn.textContent);
+    }
     
     showToast(elements.toast, "Wallet connected successfully!", 3000);
     
@@ -197,6 +204,7 @@ async function resolveAddressOrENS(input) {
     if (isValidAddress(input)) {
       // Input is an Ethereum address
       appState.currentState.resolvedAddress = input;
+      // Use the direct resolution method
       const name = await lookupENSName(input);
       
       appState.currentState.lookingUpENS = false;
@@ -208,6 +216,7 @@ async function resolveAddressOrENS(input) {
       };
     } else if (input.includes(".")) {
       // Input might be an ENS name
+      // Use the direct resolution method that doesn't require wallet connection
       const address = await lookupENSAddress(input);
       
       if (address && isValidAddress(address)) {
@@ -971,12 +980,7 @@ elements.recipientInput.addEventListener("input", async function () {
 elements.confirmButton.addEventListener("click", async function (event) {
   event.stopPropagation();
 
-  if (!appState.wallet.connected) {
-    showToast(elements.toast, "Please connect your wallet first to confirm this transaction", 3000);
-    await handleConnectWallet();
-    if (!appState.wallet.connected) return;
-  }
-
+  // First resolve the ENS address if needed - this can work without wallet connection
   if (!appState.currentState.resolvedAddress) {
     if (appState.currentState.lookingUpENS) {
       showToast(elements.toast, "Please wait while we resolve the address...", 3000);
@@ -992,6 +996,13 @@ elements.confirmButton.addEventListener("click", async function (event) {
       elements.recipientInput.focus();
       return;
     }
+  }
+  
+  // Then check wallet connection status
+  if (!appState.wallet.connected) {
+    showToast(elements.toast, "Please connect your wallet to continue", 3000);
+    await handleConnectWallet();
+    if (!appState.wallet.connected) return;
   }
 
   elements.confirmationModal.style.display = "none";

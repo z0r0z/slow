@@ -1,52 +1,23 @@
-import { createWalletClient, createPublicClient, custom, getContract, http } from 'viem';
+import { createWalletClient, createPublicClient, custom, getContract, http, erc20Abi } from 'viem';
 import { mainnet, base } from 'viem/chains';
 import onboard from '../../onboard';
-
+import { CTCAbi } from '../../abis/CTCAbi';
+import { SlowAbi } from '../../abis/SlowAbi';
 // Contract ABIs
 const SLOW_CONTRACT_ADDRESS = "0x000000000000888741B254d37e1b27128AfEAaBC";
 const CTC_CONTRACT_ADDRESS = "0x0000000000cDC1F8d393415455E382c30FBc0a84";
 
-const SLOW_CONTRACT_ABI = [
-  "function safeTransferFrom(address from, address to, uint256 id, uint256 amount, bytes data)",
-  "function depositTo(address token, address to, uint256 amount, uint96 delay, bytes data) payable returns (uint256 transferId)",
-  "function withdrawFrom(address from, address to, uint256 id, uint256 amount)",
-  "function reverse(uint256 transferId)",
-  "function unlock(uint256 transferId)",
-  "function multicall(bytes[] calldata data) returns (bytes[] memory)",
-  "function pendingTransfers(uint256 transferId) view returns (uint96 timestamp, address from, address to, uint256 id, uint256 amount)",
-  "function unlockedBalances(address user, uint256 id) view returns (uint256)",
-  "function predictTransferId(address from, address to, uint256 id, uint256 amount) view returns (uint256)",
-  "function encodeId(address token, uint256 delay) pure returns (uint256 id)",
-  "function decodeId(uint256 id) pure returns (address token, uint256 delay)",
-  "function canReverseTransfer(uint256 transferId) view returns (bool canReverse, bytes4 reason)",
-  "event TransferPending(uint256 indexed transferId, uint256 indexed delay)",
-  "event Unlocked(address indexed user, uint256 indexed id, uint256 indexed amount)",
-];
-
-const CTC_CONTRACT_ABI = [
-  "function whatIsTheAddressOf(string calldata name) view returns (address _owner, address receiver, bytes32 node)",
-  "function whatIsTheNameOf(address user) view returns (string memory)",
-];
-
-const ERC20_ABI = [
-  "function approve(address spender, uint256 amount) returns (bool)",
-  "function allowance(address owner, address spender) view returns (uint256)",
-  "function balanceOf(address account) view returns (uint256)",
-  "function decimals() view returns (uint8)",
-  "function symbol() view returns (string)",
-];
 
 // Initialize a public client for read-only operations on mainnet
 let mainnetClient = createPublicClient({
   chain: mainnet,
-  transport: http('https://eth-mainnet.g.alchemy.com/v2/demo')
+  transport: http()
 });
 
 // Initialize public and wallet clients for Base
 let basePublicClient = null;
 let walletClient = null;
 let slowContract = null;
-let ctcContract = null;
 
 // Cache for token decimals and ENS names
 const tokenDecimalsCache = {};
@@ -60,13 +31,83 @@ export async function connectWallet() {
   try {
     console.log("Starting wallet connection with onboard...");
     
-    // Use onboard to connect wallet and show the modal
-    // Set autoselect option to false to ensure the modal always opens
-    const wallets = await onboard.connectWallet();
+    // Get the current wallet state first
+    const currentState = onboard.state.get();
+    console.log("Current onboard state:", currentState);
     
-    console.log("Onboard connect wallet result:", wallets);
+    // If wallet is already connected, use it
+    if (currentState.wallets && currentState.wallets.length > 0) {
+      console.log("Wallet already connected, using existing wallet");
+      const wallets = currentState.wallets;
+      const connectedWallet = wallets[0];
+      const provider = connectedWallet.provider;
+      const account = connectedWallet.accounts[0].address;
+      
+      // Create the wallet client
+      walletClient = createWalletClient({
+        account,
+        chain: base,
+        transport: custom(provider)
+      });
+      
+      // Create the public client for Base
+      basePublicClient = createPublicClient({
+        chain: base,
+        transport: custom(provider)
+      });
+      
+      // Check if we're on the Base network
+      const chainId = await basePublicClient.getChainId();
+      console.log("Connected to chain:", chainId);
+      
+      if (chainId !== base.id) {
+        console.log("Wrong network, requesting chain switch to Base");
+        await onboard.setChain({ chainId: 8453 }); // Base chainId
+        return { success: false, message: "Please switch to Base network" };
+      }
+      
+      // Initialize the SLOW contract with viem
+      slowContract = getContract({
+        address: SLOW_CONTRACT_ADDRESS,
+        abi: SlowAbi,
+        publicClient: basePublicClient,
+        walletClient
+      });
+          
+      // Get ENS name if available
+      const ensName = await lookupENSName(account);
+      
+      return {
+        success: true,
+        address: account,
+        walletClient,
+        publicClient: basePublicClient,
+        chainId,
+        ensName,
+        label: connectedWallet.label
+      };
+    }
     
-    if (wallets.length === 0) {
+    // If no wallet is connected yet, connect one
+    let wallets;
+    try {
+      wallets = await onboard.connectWallet();
+      console.log("Onboard connect wallet result:", wallets);
+    } catch (error) {
+      console.error("Error in onboard.connectWallet:", error);
+      
+      // Get the state after the error to see if a wallet was connected despite the error
+      const state = onboard.state.get();
+      console.log("Onboard state after error:", state);
+      
+      if (state.wallets && state.wallets.length > 0) {
+        wallets = state.wallets;
+      } else {
+        return { success: false, message: "Failed to connect wallet. Please try again." };
+      }
+    }
+    
+    if (!wallets || wallets.length === 0) {
       return { success: false, message: "No wallet connected" };
     }
     
@@ -93,26 +134,18 @@ export async function connectWallet() {
     
     if (chainId !== base.id) {
       console.log("Wrong network, requesting chain switch to Base");
-      // Use onboard to set chain
-      await onboard.setChain({ chainId: '0x2105' }); // Base chainId in hex
+      await onboard.setChain({ chainId: 8453 }); // Base chainId
       return { success: false, message: "Please switch to Base network" };
     }
     
     // Initialize the SLOW contract with viem
     slowContract = getContract({
       address: SLOW_CONTRACT_ADDRESS,
-      abi: SLOW_CONTRACT_ABI,
+      abi: SlowAbi,
       publicClient: basePublicClient,
       walletClient
     });
-    
-    // Initialize CTC contract on mainnet
-    ctcContract = getContract({
-      address: CTC_CONTRACT_ADDRESS,
-      abi: CTC_CONTRACT_ABI,
-      publicClient: mainnetClient
-    });
-    
+        
     // Get ENS name if available
     const ensName = await lookupENSName(account);
     
@@ -167,16 +200,13 @@ export async function lookupENSName(address) {
   }
 
   try {
-    // Initialize CTC contract if needed
-    if (!ctcContract) {
-      ctcContract = getContract({
-        address: CTC_CONTRACT_ADDRESS,
-        abi: CTC_CONTRACT_ABI,
-        publicClient: mainnetClient
-      });
-    }
-
-    const name = await ctcContract.read.whatIsTheNameOf([address]);
+    // Use readContract directly with the mainnetClient
+    const name = await mainnetClient.readContract({
+      address: CTC_CONTRACT_ADDRESS,
+      abi: CTCAbi,
+      functionName: 'whatIsTheNameOf',
+      args: [address]
+    });
 
     if (name) {
       ensCache[cacheKey] = name;
@@ -203,20 +233,20 @@ export async function lookupENSAddress(name) {
   }
 
   try {
-    // Initialize CTC contract if needed
-    if (!ctcContract) {
-      ctcContract = getContract({
-        address: CTC_CONTRACT_ADDRESS,
-        abi: CTC_CONTRACT_ABI,
-        publicClient: mainnetClient
-      });
-    }
+    // Use readContract directly with the mainnetClient
+    console.log("ENS Try", name)
+    const result = await mainnetClient.readContract({
+      address: CTC_CONTRACT_ADDRESS,
+      abi: CTCAbi,
+      functionName: 'whatIsTheAddressOf',
+      args: [name]
+    });
 
-    const result = await ctcContract.read.whatIsTheAddressOf([name]);
+    console.log("ENS Result", result)
 
-    if (result && result.receiver) {
-      ensCache[cacheKey] = result.receiver;
-      return result.receiver;
+    if (result && result[0]) {
+      ensCache[cacheKey] = result[0];
+      return result[0];
     }
 
     return null;
@@ -246,7 +276,7 @@ export function getTokenContract(tokenAddress) {
   
   return getContract({
     address: tokenAddress,
-    abi: ERC20_ABI,
+    abi: erc20Abi,
     publicClient: basePublicClient,
     walletClient
   });
