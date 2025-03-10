@@ -47,7 +47,7 @@ export async function loadPendingTransfers({
     if (shouldRefresh) {
       // Query for TransferPending events
       const blocksToSearch = Number(currentBlock) - SLOW_DEPLOYMENT_BLOCK;
-      const CHUNK_SIZE = 50000; // Adjust based on RPC provider limits
+      const CHUNK_SIZE = 10000; // Adjust based on RPC provider limits
 
       if (blocksToSearch > CHUNK_SIZE) {
         // Query in chunks to avoid RPC timeouts for large ranges

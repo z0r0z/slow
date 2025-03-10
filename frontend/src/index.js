@@ -118,15 +118,13 @@ async function handleConnectWallet() {
     
     // Update UI
     if (result.ensName) {
-      elements.$label.innerHTML = `${result.label}`;
       elements.walletButton.textContent = result.ensName;
     } else {
-      elements.$label.innerHTML = `${result.label}`;
       elements.walletButton.textContent = formatAddress(result.address);
     }
     
     elements.$address.innerHTML = formatAddress(result.address);
-    elements.$wallet.classList.remove("hidden");
+    // elements.$wallet.classList.remove("hidden");
     elements.$disconnected.classList.add("hidden");
     
     // Force update the wallet button text

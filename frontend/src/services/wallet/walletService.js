@@ -70,8 +70,10 @@ export async function connectWallet() {
       slowContract = getContract({
         address: SLOW_CONTRACT_ADDRESS,
         abi: SlowAbi,
-        publicClient: basePublicClient,
-        walletClient
+        client: { 
+          public: basePublicClient,
+          wallet: walletClient
+        }
       });
           
       // Get ENS name if available
@@ -112,6 +114,7 @@ export async function connectWallet() {
     }
     
     const connectedWallet = wallets[0];
+
     const provider = connectedWallet.provider;
     const account = connectedWallet.accounts[0].address;
     
@@ -121,6 +124,8 @@ export async function connectWallet() {
       chain: base,
       transport: custom(provider)
     });
+
+    const [address] = await walletClient.getAddresses() 
     
     // Create the public client for Base
     basePublicClient = createPublicClient({
@@ -142,8 +147,10 @@ export async function connectWallet() {
     slowContract = getContract({
       address: SLOW_CONTRACT_ADDRESS,
       abi: SlowAbi,
-      publicClient: basePublicClient,
-      walletClient
+      client: {
+        public: basePublicClient,
+        wallet: walletClient
+      }
     });
         
     // Get ENS name if available
@@ -277,8 +284,10 @@ export function getTokenContract(tokenAddress) {
   return getContract({
     address: tokenAddress,
     abi: erc20Abi,
-    publicClient: basePublicClient,
-    walletClient
+    client: {
+      public: basePublicClient,
+      wallet: walletClient
+    }
   });
 }
 

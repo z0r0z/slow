@@ -58,10 +58,16 @@ module.exports = {
   ],
   devServer: {
     historyApiFallback: true,
-    static: { 
-      directory: path.join(__dirname, "/"),
-      publicPath: '/', 
-    },
+    static: [
+      { 
+        directory: path.join(__dirname, "/"),
+        publicPath: '/', 
+      },
+      {
+        directory: path.join(__dirname, "public"),
+        publicPath: '/',
+      }
+    ],
     port: 9000,
     hot: true,
     devMiddleware: {
