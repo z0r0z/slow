@@ -96,6 +96,7 @@ const uiController = new UIController(elements);
  */
 async function handleConnectWallet() {
   try {    
+    console.log("Clicked handleConnectWallet")
     const result = await connectWallet();
     
     if (!result.success) {
@@ -164,7 +165,7 @@ function handleDisconnectWallet() {
     // Update UI
     elements.walletButton.textContent = "Connect Wallet";
     elements.$wallet.classList.add("hidden");
-    elements.$disconnected.classList.add("hidden"); // Keep both hidden to avoid duplicate buttons
+    elements.$disconnected.classList.remove("hidden"); // Show connect button when disconnected
     
     localStorage.removeItem("walletConnected");
     showToast(elements.toast, "Wallet disconnected", 3000);
@@ -671,13 +672,19 @@ function handleTakeBoxClick() {
 /**
  * Handle wallet button click
  */
-elements.walletButton.addEventListener("click", function (event) {
+elements.walletButton.addEventListener("click", async function (event) {
   event.stopPropagation();
-
+  console.log("Wallet button clicked");
+  
   if (appState.wallet.connected) {
     handleDisconnectWallet();
   } else {
-    handleConnectWallet();
+    try {
+      await handleConnectWallet();
+    } catch (error) {
+      console.error("Wallet button connection error:", error);
+      showToast(elements.toast, "Failed to connect wallet", 3000);
+    }
   }
 });
 
@@ -686,7 +693,13 @@ elements.walletButton.addEventListener("click", function (event) {
  */
 elements.$connect.addEventListener("click", async (event) => {
   event.stopPropagation();
-  await handleConnectWallet();
+  console.log("Connect button clicked");
+  try {
+    await handleConnectWallet();
+  } catch (error) {
+    console.error("Connect button error:", error);
+    showToast(elements.toast, "Failed to connect wallet", 3000);
+  }
 });
 
 /**
@@ -1054,7 +1067,7 @@ function init() {
     elements.$disconnected.classList.add("hidden");
   } else {
     elements.$wallet.classList.add("hidden");
-    elements.$disconnected.classList.add("hidden"); // Keep both hidden initially to avoid duplicate buttons
+    elements.$disconnected.classList.remove("hidden"); // Show connect button when disconnected
   }
 
   // Handle window blur/focus events

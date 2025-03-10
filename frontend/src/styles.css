@@ -624,7 +624,7 @@ body.inverted .toast {
 .toast.show {
     opacity: 1;
 }
-.wallet-btn {
+.wallet {
     position: absolute;
     top: 20px;
     right: 20px;
@@ -635,18 +635,29 @@ body.inverted .toast {
     border-radius: 4px;
     font-size: 14px;
     cursor: pointer;
-    z-index: 50;
+    z-index: 1000; /* Increased from 50 to ensure it's above all other elements */
     transition: var(--transition);
 }
-.wallet-btn:hover {
+.wallet.hidden {
+    display: none;
+}
+.wallet:hover {
     background-color: var(--mid-gray);
 }
-body.inverted .wallet-btn {
+.connect-button, .disconnect-button {
+    background-color: transparent;
+    color: inherit;
+    border: none;
+    font-size: inherit;
+    cursor: pointer;
+    padding: 0;
+}
+body.inverted .wallet {
     background-color: #e6e6e6;
     color: var(--black);
     border-color: var(--black);
 }
-body.inverted .wallet-btn:hover {
+body.inverted .wallet:hover {
     background-color: #d6d6d6;
 }
 .token-info {

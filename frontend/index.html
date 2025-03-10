@@ -13,15 +13,17 @@
         <script defer src="/main.js"></script>
     </head>
     <body>
-        <button class="wallet-btn" id="walletButton">Connect Wallet</button>
         <div class="wallet hidden">
-            <div class="label"></div>
-            <div class="address"></div>
+            <div class="connected">
+              <div class="address"></div>
+              <div class="label"></div>
+            </div>
             <button class="disconnect-button">Disconnect</button>
         </div>
-        <div class="disconnected hidden">
-            <button class="connect-button">Connect Wallet</button>
+        <div class="wallet disconnected">
+            <button class="connect-button" id="walletButton">Connect</button>
         </div>
+  
         <div class="back-button" id="backButton"></div>
         <div class="container" id="buttonContainer">
             <div class="box top-box" id="sendBox">SEND</div>

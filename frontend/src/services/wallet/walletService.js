@@ -58,8 +58,13 @@ const ensCache = {};
  */
 export async function connectWallet() {
   try {
+    console.log("Starting wallet connection with onboard...");
+    
     // Use onboard to connect wallet and show the modal
+    // Set autoselect option to false to ensure the modal always opens
     const wallets = await onboard.connectWallet();
+    
+    console.log("Onboard connect wallet result:", wallets);
     
     if (wallets.length === 0) {
       return { success: false, message: "No wallet connected" };
@@ -84,8 +89,10 @@ export async function connectWallet() {
     
     // Check if we're on the Base network
     const chainId = await basePublicClient.getChainId();
+    console.log("Connected to chain:", chainId);
     
     if (chainId !== base.id) {
+      console.log("Wrong network, requesting chain switch to Base");
       // Use onboard to set chain
       await onboard.setChain({ chainId: '0x2105' }); // Base chainId in hex
       return { success: false, message: "Please switch to Base network" };

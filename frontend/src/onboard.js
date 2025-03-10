@@ -4,10 +4,16 @@ import walletConnectModule from "@web3-onboard/walletconnect";
 import coinbaseModule from "@web3-onboard/coinbase";
 import bitgetModule from "@web3-onboard/bitget";
 
+const PROJECT_ID = process.env.PROJECT_ID;
+
+if (!PROJECT_ID) {
+  throw new Error("PROJECT_ID is required");
+}
 
 const injected = injectedWalletsModule();
 const walletConnect = walletConnectModule({
-  projectId: "6f18cf6b0d7ef0558dd8b6730057647c",
+  projectId: PROJECT_ID,
+  dappUrl: "http://slow.eth.limo"
 });
 
 const coinbaseWallet = coinbaseModule();
@@ -37,10 +43,10 @@ const chains = [
 ];
 
 const appMetadata = {
-  name: "Web3-Onboard Vanilla JS Demo",
-  icon: "<svg />",
-  logo: "<svg />",
-  description: "Demo using Onboard",
+  name: "SLOW Protocol",
+  icon: "<svg>...</svg>",
+  logo: "<svg>...</svg>",
+  description: "Time-locked transfers on Base",
   recommendedInjectedWallets: [
     { name: "Coinbase", url: "https://wallet.coinbase.com/" },
     { name: "MetaMask", url: "https://metamask.io" },

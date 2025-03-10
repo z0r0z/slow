@@ -1,5 +1,9 @@
 const path = require("path");
 const webpack = require("webpack");
+const dotenv = require("dotenv");
+
+// Load environment variables from .env file
+const env = dotenv.config().parsed || {};
 
 module.exports = {
   entry: "./src/index.js",
@@ -49,7 +53,7 @@ module.exports = {
       Buffer: ["buffer", "Buffer"],
     }),
     new webpack.DefinePlugin({
-      'process.env': JSON.stringify(process.env)
+      'process.env': JSON.stringify({...process.env, ...env})
     }),
   ],
   devServer: {
