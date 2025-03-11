@@ -1,6 +1,8 @@
 import { getSlowContract, getTokenDecimals } from '../wallet/walletService';
 import { SLOW_CONTRACT_ADDRESS } from '../wallet/walletService';
 import { formatTimeDiff } from '../utils';
+import { encodeFunctionData } from 'viem';
+import { SlowAbi } from '../../abis/SlowAbi';
 
 // Deployment block of the SLOW contract
 const SLOW_DEPLOYMENT_BLOCK = 27245775;
@@ -432,14 +434,22 @@ export async function prepareUnlockAndWithdrawCalldata({
       throw new Error("Transfer does not exist or has already been unlocked/reversed");
     }
 
-    const unlockCalldata = slowContract.write.unlock.populateTransaction([transferId]);
+    const unlockCalldata = encodeFunctionData({
+      abi: SlowAbi,
+      functionName: 'unlock',
+      args: [transferId]
+    });
     
-    const withdrawCalldata = slowContract.write.withdrawFrom.populateTransaction([
-      transfer[2], // to (recipient of the original transfer)
-      userAddress, // destination for the withdrawn funds
-      transfer[3], // tokenId
-      transfer[4]  // amount
-    ]);
+    const withdrawCalldata = encodeFunctionData({
+      abi: SlowAbi,
+      functionName: 'withdrawFrom',
+      args: [
+        transfer[2], // to (recipient of the original transfer)
+        userAddress, // destination for the withdrawn funds
+        transfer[3], // tokenId
+        transfer[4]  // amount
+      ]
+    });
 
     return [unlockCalldata, withdrawCalldata];
   } catch (error) {
@@ -525,14 +535,22 @@ export async function prepareReverseAndWithdrawCalldata({
       throw new Error("Transfer does not exist or has already been unlocked/reversed");
     }
 
-    const reverseCalldata = slowContract.write.reverse.populateTransaction([transferId]);
+    const reverseCalldata = encodeFunctionData({
+      abi: SlowAbi,
+      functionName: 'reverse',
+      args: [transferId]
+    });
     
-    const withdrawCalldata = slowContract.write.withdrawFrom.populateTransaction([
-      transfer[1], // from (sender of the original transfer)
-      userAddress, // destination for the withdrawn funds
-      transfer[3], // tokenId
-      transfer[4]  // amount
-    ]);
+    const withdrawCalldata = encodeFunctionData({
+      abi: SlowAbi,
+      functionName: 'withdrawFrom',
+      args: [
+        transfer[1], // from (sender of the original transfer)
+        userAddress, // destination for the withdrawn funds
+        transfer[3], // tokenId
+        transfer[4]  // amount
+      ]
+    });
 
     return [reverseCalldata, withdrawCalldata];
   } catch (error) {

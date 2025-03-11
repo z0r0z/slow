@@ -4,7 +4,7 @@ import walletConnectModule from "@web3-onboard/walletconnect";
 import coinbaseModule from "@web3-onboard/coinbase";
 import bitgetModule from "@web3-onboard/bitget";
 
-const PROJECT_ID = process.env.PROJECT_ID;
+const PROJECT_ID = "6f18cf6b0d7ef0558dd8b6730057647c";
 
 if (!PROJECT_ID) {
   throw new Error("PROJECT_ID is required");

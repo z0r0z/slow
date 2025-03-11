@@ -4,10 +4,7 @@ These are PNG icons generated from the snail 🐌 emoji in various sizes for use
 
 ## Available Sizes
 
-- 16x16 pixels: `snail-16.png`
 - 32x32 pixels: `snail-32.png`
-- 64x64 pixels: `snail-64.png`
-- 128x128 pixels: `snail-128.png`
 - 256x256 pixels: `snail-256.png`
 
 ## Usage in JavaScript

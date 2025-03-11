@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "./polyfills";
 import "./styles.css";
 import AppState from './ui/AppState';
 import UIController from './ui/UIController';
