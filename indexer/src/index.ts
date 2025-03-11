@@ -1,24 +1,26 @@
 import { ponder } from "ponder:registry";
 import {
-  users,
-  tokens,
-  balances,
-  transfers,
-  guardianSetEvents,
-  transferApprovedEvents,
-  unlockEvents,
+  user,
+  token,
+  balance,
+  transfer,
+  guardianSetEvent,
+  transferApprovedEvent,
+  unlockEvent,
 } from "ponder:schema";
+import { erc20Abi, zeroAddress } from "viem";
 
 ponder.on("SLOW:GuardianSet", async ({ event, context }) => {
   // Event args: user (address), guardian (address)
-  const { user, guardian } = event.args;
+  const { user: userAddress, guardian } = event.args;
 
   await context.db
-    .insert(users)
+    .insert(user)
     .values({
-      id: user,
+      id: userAddress,
       guardian: guardian,
       lastGuardianChange: BigInt(event.block.timestamp),
+      nonce: 0n,
     })
     .onConflictDoUpdate({
       guardian: guardian,
@@ -26,30 +28,30 @@ ponder.on("SLOW:GuardianSet", async ({ event, context }) => {
     });
 
   // Also record this as a guardian event
-  await context.db.insert(guardianSetEvents).values({
+  await context.db.insert(guardianSetEvent).values({
     id: `${event.transaction.hash}-${event.log.logIndex}`,
     blockNumber: BigInt(event.block.number),
     transactionHash: event.transaction.hash,
     timestamp: BigInt(event.block.timestamp),
-    userAddress: user,
+    userAddress: userAddress,
     guardianAddress: guardian,
   });
 });
 
 ponder.on("SLOW:TransferApproved", async ({ event, context }) => {
   // Event args: guardian (address), user (address), transferId (uint256)
-  const { guardian, user, transferId } = event.args;
+  const { guardian, user: userAddress, transferId } = event.args;
 
   await context.db
-    .update(transfers, {
+    .update(transfer, {
       id: transferId,
     })
     .set({ status: "APPROVED" });
 
   // Record this as a guardian approval event
-  await context.db.insert(transferApprovedEvents).values({
+  await context.db.insert(transferApprovedEvent).values({
     id: `${event.transaction.hash}-${event.log.logIndex}`,
-    userAddress: user,
+    userAddress: userAddress,
     guardianAddress: guardian,
     transferId: transferId,
     blockNumber: BigInt(event.block.number),
@@ -72,7 +74,7 @@ ponder.on("SLOW:TransferPending", async ({ event, context }) => {
   });
   const [timestamp, from, to, tokenId, amount] = pendingTransfer;
 
-  await context.db.insert(transfers).values({
+  await context.db.insert(transfer).values({
     id: transferId,
     fromAddress: from,
     toAddress: to,
@@ -85,7 +87,7 @@ ponder.on("SLOW:TransferPending", async ({ event, context }) => {
   });
 
   await context.db
-    .insert(balances)
+    .insert(balance)
     .values({
       userAddress: from,
       tokenId: tokenId,
@@ -95,6 +97,49 @@ ponder.on("SLOW:TransferPending", async ({ event, context }) => {
     .onConflictDoUpdate((row) => ({
       unlockedBalance: (row.unlockedBalance ?? 0n) - BigInt(amount),
     }));
+
+  const [tokenAddress, delaySeconds] = await client.readContract({
+    abi: SLOW.abi,
+    address: SLOW.address,
+    functionName: "decodeId",
+    args: [tokenId],
+  });
+
+  // insert token if does not exist
+  let name, symbol, decimals;
+  if (tokenAddress !== zeroAddress) {
+    name = await client.readContract({
+      abi: erc20Abi,
+      address: tokenAddress,
+      functionName: "name",
+    });
+    symbol = await client.readContract({
+      abi: erc20Abi,
+      address: tokenAddress,
+      functionName: "symbol",
+    });
+    decimals = await client.readContract({
+      abi: erc20Abi,
+      address: tokenAddress,
+      functionName: "decimals",
+    });
+  } else {
+    // ETH
+    name = "Ether";
+    symbol = "ETH";
+    decimals = 18;
+  }
+  await context.db
+    .insert(token)
+    .values({
+      id: tokenId,
+      tokenAddress,
+      decimals,
+      delaySeconds,
+      tokenName: name,
+      tokenSymbol: symbol,
+    })
+    .onConflictDoNothing();
 });
 
 ponder.on("SLOW:TransferSingle", async ({ event, context }) => {
@@ -111,29 +156,38 @@ ponder.on("SLOW:TransferSingle", async ({ event, context }) => {
     functionName: "predictTransferId",
     args: [from, to, tokenId, amount],
   });
-  await context.db.insert(transfers).values({
-    id: transferId,
-    fromAddress: from,
-    toAddress: to,
-    tokenId: tokenId,
-    amount: amount,
-    status: "TRANSFERRED",
-    blockNumber: BigInt(event.block.number),
-    transactionHash: event.transaction.hash,
-    timestamp: BigInt(event.block.timestamp),
-  });
 
-  // Update balances
-  // For the sender
+  // Only set the status to TRANSFERRED if it is a SLOW burn (to address is zero address)
+  const status =
+    to === "0x0000000000000000000000000000000000000000"
+      ? "TRANSFERRED"
+      : undefined;
+
+  await context.db
+    .insert(transfer)
+    .values({
+      id: transferId,
+      fromAddress: from,
+      toAddress: to,
+      tokenId: tokenId,
+      amount: amount,
+      status: status,
+      blockNumber: BigInt(event.block.number),
+      transactionHash: event.transaction.hash,
+      timestamp: BigInt(event.block.timestamp),
+    })
+    .onConflictDoUpdate(status ? { status } : {});
+
+  // Mint SLOW
   if (from !== "0x0000000000000000000000000000000000000000") {
-    const fromBalanceExists = await context.db.find(balances, {
+    const fromBalanceExists = await context.db.find(balance, {
       userAddress: from,
       tokenId: tokenId,
     });
 
     if (fromBalanceExists) {
       await context.db
-        .update(balances, { userAddress: from, tokenId: tokenId })
+        .update(balance, { userAddress: from, tokenId: tokenId })
         .set((row) => ({
           totalBalance: (row.totalBalance || BigInt(0)) - BigInt(amount),
           unlockedBalance: (row.unlockedBalance || BigInt(0)) - BigInt(amount),
@@ -141,22 +195,22 @@ ponder.on("SLOW:TransferSingle", async ({ event, context }) => {
     }
   }
 
-  // For the receiver
+  // Burn SLOW
   if (to !== "0x0000000000000000000000000000000000000000") {
-    const toBalanceExists = await context.db.find(balances, {
+    const toBalanceExists = await context.db.find(balance, {
       userAddress: to,
       tokenId: tokenId,
     });
 
     if (toBalanceExists) {
       await context.db
-        .update(balances, { userAddress: to, tokenId: tokenId })
+        .update(balance, { userAddress: to, tokenId: tokenId })
         .set((row) => ({
           totalBalance: (row.totalBalance || BigInt(0)) + BigInt(amount),
           unlockedBalance: (row.unlockedBalance || BigInt(0)) + BigInt(amount),
         }));
     } else {
-      await context.db.insert(balances).values({
+      await context.db.insert(balance).values({
         userAddress: to,
         tokenId: tokenId,
         totalBalance: BigInt(amount),
@@ -171,32 +225,33 @@ ponder.on("SLOW:URI", async ({ event, context }) => {
   const { id } = event.args;
 
   const tokenId = id.toString();
-  const existingToken = await context.db.find(tokens, { id: tokenId });
+  const existingToken = await context.db.find(token, { id: tokenId });
   if (existingToken) {
     await context.db
-      .update(tokens, { id: tokenId })
+      .update(token, { id: tokenId })
       .set({ uri: event.args.value });
   }
 });
 
 ponder.on("SLOW:Unlocked", async ({ event, context }) => {
   // Event args: user (address), id (uint256), amount (uint256)
-  const { user, id: tokenId, amount } = event.args;
+  const { user: userAddress, id: tokenId, amount } = event.args;
 
-  await context.db.insert(unlockEvents).values({
+  await context.db.insert(unlockEvent).values({
     id: `${event.transaction.hash}-${event.log.logIndex}`,
     blockNumber: BigInt(event.block.number),
     transactionHash: event.transaction.hash,
     timestamp: BigInt(event.block.timestamp),
-    userAddress: user,
+    userAddress: userAddress,
     tokenId: tokenId,
     amount: amount,
+    transferId: 0n, // Default value as it's not available in the event
   });
 
   await context.db
-    .insert(balances)
+    .insert(balance)
     .values({
-      userAddress: user,
+      userAddress: userAddress,
       tokenId: tokenId,
       totalBalance: BigInt(amount),
       unlockedBalance: BigInt(amount),

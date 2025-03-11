@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "ponder dev",
     "start": "ponder start",
-    "lint": "eslint .",
+    "lint": "eslint ./src --ext .ts",
     "typecheck": "tsc"
   },
   "dependencies": {
