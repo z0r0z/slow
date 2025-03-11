@@ -26,11 +26,11 @@ export const userRelation = relations(user, ({ many }) => ({
 // Table for tracking token IDs
 export const token = onchainTable("token", (t) => ({
   id: t.bigint().primaryKey(), // tokenId (encoded id)
-  tokenAddress: t.hex(),
+  address: t.hex(),
   decimals: t.integer(),
   delaySeconds: t.bigint(),
-  tokenName: t.text(),
-  tokenSymbol: t.text(),
+  name: t.text(),
+  symbol: t.text(),
   uri: t.text(),
 }));
 
@@ -73,6 +73,7 @@ export const transfer = onchainTable("transfer", (t) => ({
   toAddress: t.hex(),
   tokenId: t.bigint(),
   amount: t.bigint(),
+  expiryTimestamp: t.bigint(),
 
   status: transferStatus(),
 

@@ -62,7 +62,7 @@ ponder.on("SLOW:TransferApproved", async ({ event, context }) => {
 
 ponder.on("SLOW:TransferPending", async ({ event, context }) => {
   // Event args: transferId (uint256), delay (uint256)
-  const { transferId } = event.args;
+  const { transferId, delay } = event.args;
   const client = context.client;
   const { SLOW } = context.contracts;
 
@@ -113,12 +113,15 @@ ponder.on("SLOW:TransferPending", async ({ event, context }) => {
       nonce: toNonce,
     });
 
+  const expiryTimestamp = BigInt(event.block.timestamp) + BigInt(delay);
+
   await context.db.insert(transfer).values({
     id: transferId,
     fromAddress: from,
     toAddress: to,
     tokenId: tokenId,
     amount: amount,
+    expiryTimestamp,
     status: "PENDING",
     blockNumber: BigInt(event.block.number),
     transactionHash: event.transaction.hash,
@@ -172,11 +175,11 @@ ponder.on("SLOW:TransferPending", async ({ event, context }) => {
     .insert(token)
     .values({
       id: tokenId,
-      tokenAddress,
+      address: tokenAddress,
       decimals,
       delaySeconds,
-      tokenName: name,
-      tokenSymbol: symbol,
+      name: name,
+      symbol: symbol,
     })
     .onConflictDoNothing();
 });
