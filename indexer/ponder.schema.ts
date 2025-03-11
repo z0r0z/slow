@@ -1,79 +1,141 @@
-import { onchainTable } from "ponder";
+import { onchainEnum, onchainTable, primaryKey, relations } from "ponder";
+
+export const transferStatus = onchainEnum("status", [
+  "PENDING",
+  "APPROVAL_REQUIRED",
+  "APPROVED",
+  "REVERSED",
+  "UNLOCKED",
+  "EXPIRED",
+  "TRANSFERRED",
+]);
 
 // Table for tracking users and their guardians
-export const users = onchainTable("users", (t) => ({
+export const users = onchainTable("user", (t) => ({
   id: t.hex().primaryKey(), // user address
   guardian: t.hex(),
-  lastGuardianChange: t.timestamp(),
-  nonce: t.integer(),
+  lastGuardianChange: t.bigint(), // block.timestamp
+  nonce: t.bigint(),
+}));
+
+export const userRelations = relations(users, ({ many }) => ({
+  transfers: many(transfers),
+  balances: many(balances),
 }));
 
 // Table for tracking token IDs
-export const tokens = onchainTable("tokens", (t) => ({
+export const tokens = onchainTable("token", (t) => ({
   id: t.text().primaryKey(), // tokenId as string (encoded id)
   tokenAddress: t.hex(),
   delaySeconds: t.integer(),
   tokenName: t.text(),
   tokenSymbol: t.text(),
+  uri: t.text(),
+}));
+
+export const tokenRelations = relations(tokens, ({ many }) => ({
+  balances: many(balances),
 }));
 
 // Table for tracking user balances
-export const balances = onchainTable("balances", (t) => ({
-  id: t.text().primaryKey(), // composite key: userAddress-tokenId
-  userAddress: t.hex(),
-  tokenId: t.text(),
-  totalBalance: t.integer(),
-  unlockedBalance: t.integer(),
+export const balances = onchainTable(
+  "balance",
+  (t) => ({
+    userAddress: t.hex(),
+    tokenId: t.bigint(),
+    totalBalance: t.bigint(),
+    unlockedBalance: t.bigint(),
+  }),
+  (table) => ({
+    pk: primaryKey({
+      columns: [table.userAddress, table.tokenId],
+    }),
+  }),
+);
+
+export const balanceRelations = relations(balances, ({ one }) => ({
+  user: one(users, {
+    fields: [balances.userAddress],
+    references: [users.id],
+  }),
+  token: one(tokens, {
+    fields: [balances.tokenId],
+    references: [tokens.id],
+  }),
 }));
 
-// Table for tracking pending transfers
-export const pendingTransfers = onchainTable("pending_transfers", (t) => ({
-  id: t.hex().primaryKey(), // transferId
-  timestamp: t.timestamp(),
+export const transfers = onchainTable("transfer", (t) => ({
+  id: t.bigint().primaryKey(), // transaction hash + log index
+
   fromAddress: t.hex(),
   toAddress: t.hex(),
-  tokenId: t.text(),
-  amount: t.integer(),
-  guardianApproved: t.boolean(),
-  unlocked: t.boolean(),
-  reversed: t.boolean(),
-  expiresAt: t.timestamp(),
-}));
+  tokenId: t.bigint(),
+  amount: t.bigint(),
 
-// Table for tracking transfer events
-export const transferEvents = onchainTable("transfer_events", (t) => ({
-  id: t.text().primaryKey(), // transaction hash + log index
-  blockNumber: t.integer(),
+  status: transferStatus(),
+
+  blockNumber: t.bigint(),
   transactionHash: t.hex(),
-  timestamp: t.timestamp(),
-  fromAddress: t.hex(),
-  toAddress: t.hex(),
-  tokenId: t.text(),
-  amount: t.integer(),
-  isPending: t.boolean(),
-  isUnlocked: t.boolean(),
+  timestamp: t.bigint(),
+}));
+
+export const transferRelations = relations(transfers, ({ one }) => ({
+  user: one(users, {
+    fields: [transfers.fromAddress],
+    references: [users.id],
+  }),
+  token: one(tokens, {
+    fields: [transfers.tokenId],
+    references: [tokens.id],
+  }),
 }));
 
 // Table for tracking guardian events
-export const guardianEvents = onchainTable("guardian_events", (t) => ({
+export const guardianSetEvents = onchainTable("guardian_set_event", (t) => ({
   id: t.text().primaryKey(), // transaction hash + log index
-  blockNumber: t.integer(),
-  transactionHash: t.hex(),
-  timestamp: t.timestamp(),
+
   userAddress: t.hex(),
   guardianAddress: t.hex(),
-  eventType: t.text(), // "SET" or "APPROVE"
-  transferId: t.hex(), // Only for APPROVE events
+
+  blockNumber: t.bigint(),
+  transactionHash: t.hex(),
+  timestamp: t.bigint(),
 }));
 
+export const transferApprovedEvents = onchainTable(
+  "transfer_approved_event",
+  (t) => ({
+    id: t.text().primaryKey(), // transaction hash + log index
+
+    userAddress: t.hex(),
+    guardianAddress: t.hex(),
+    transferId: t.bigint(),
+
+    blockNumber: t.bigint(),
+    transactionHash: t.hex(),
+    timestamp: t.bigint(),
+  }),
+);
+
 // Table for tracking unlock events
-export const unlockEvents = onchainTable("unlock_events", (t) => ({
+export const unlockEvents = onchainTable("unlock_event", (t) => ({
   id: t.text().primaryKey(), // transaction hash + log index
-  blockNumber: t.integer(),
+  blockNumber: t.bigint(),
   transactionHash: t.hex(),
-  timestamp: t.timestamp(),
+  timestamp: t.bigint(), // block.timestamp
   userAddress: t.hex(),
-  tokenId: t.text(),
-  amount: t.integer(),
-  transferId: t.hex(), // Reference to the pending transfer
+  tokenId: t.bigint(),
+  amount: t.bigint(),
+  transferId: t.bigint(),
+}));
+
+export const unlockEventsRelations = relations(unlockEvents, ({ one }) => ({
+  user: one(users, {
+    fields: [unlockEvents.userAddress],
+    references: [users.id],
+  }),
+  token: one(tokens, {
+    fields: [unlockEvents.tokenId],
+    references: [tokens.id],
+  }),
 }));
