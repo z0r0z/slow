@@ -38,8 +38,8 @@ const chains = [
 
 const appMetadata = {
   name: "SLOW Protocol",
-  icon: "/public/icons/snail-256.png",
-  logo: "/public/icons/snail-256.png",
+  icon: "https://content.wrappr.wtf/ipfs/bafkreif23ofcst2fejwamveo7o7dskj5fc5w3cu2x7lbgj6kuw4q77tmny",
+  logo: "https://content.wrappr.wtf/ipfs/bafkreif23ofcst2fejwamveo7o7dskj5fc5w3cu2x7lbgj6kuw4q77tmny",
   description: "Time-locked transfers on Base",
   recommendedInjectedWallets: [
     { name: "Coinbase", url: "https://wallet.coinbase.com/" },
