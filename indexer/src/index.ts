@@ -62,7 +62,7 @@ ponder.on("SLOW:TransferApproved", async ({ event, context }) => {
 
 ponder.on("SLOW:TransferPending", async ({ event, context }) => {
   // Event args: transferId (uint256), delay (uint256)
-  const { transferId, delay } = event.args;
+  const { transferId } = event.args;
   const client = context.client;
   const { SLOW } = context.contracts;
 
@@ -72,7 +72,46 @@ ponder.on("SLOW:TransferPending", async ({ event, context }) => {
     functionName: "pendingTransfers",
     args: [transferId],
   });
-  const [timestamp, from, to, tokenId, amount] = pendingTransfer;
+  const [_, from, to, tokenId, amount] = pendingTransfer;
+
+  const fromNonce = await client.readContract({
+    address: SLOW.address,
+    abi: SLOW.abi,
+    functionName: "nonces",
+    args: [from],
+  });
+
+  const toNonce = await client.readContract({
+    address: SLOW.address,
+    abi: SLOW.abi,
+    functionName: "nonces",
+    args: [to],
+  });
+
+  // Ensure user records exist for both sender and receiver
+  await context.db
+    .insert(user)
+    .values({
+      id: from,
+      guardian: "0x0000000000000000000000000000000000000000", // Default value
+      lastGuardianChange: 0n,
+      nonce: 0n,
+    })
+    .onConflictDoUpdate({
+      nonce: fromNonce,
+    });
+
+  await context.db
+    .insert(user)
+    .values({
+      id: to,
+      guardian: "0x0000000000000000000000000000000000000000", // Default value
+      lastGuardianChange: 0n,
+      nonce: 0n,
+    })
+    .onConflictDoUpdate({
+      nonce: toNonce,
+    });
 
   await context.db.insert(transfer).values({
     id: transferId,
@@ -146,77 +185,66 @@ ponder.on("SLOW:TransferSingle", async ({ event, context }) => {
   // Event args: operator (address), from (address), to (address), id (uint256), amount (uint256)
   const { from, to, id, amount } = event.args;
   const tokenId = id;
-
   const client = context.client;
   const { SLOW } = context.contracts;
 
-  const transferId = await client.readContract({
-    abi: SLOW.abi,
-    address: SLOW.address,
-    functionName: "predictTransferId",
-    args: [from, to, tokenId, amount],
-  });
+  // Don't record mints and burns as transfers
+  const isMint = from === "0x0000000000000000000000000000000000000000";
+  const isBurn = to === "0x0000000000000000000000000000000000000000";
 
-  // Only set the status to TRANSFERRED if it is a SLOW burn (to address is zero address)
-  const status =
-    to === "0x0000000000000000000000000000000000000000"
-      ? "TRANSFERRED"
-      : undefined;
-
-  await context.db
-    .insert(transfer)
-    .values({
-      id: transferId,
-      fromAddress: from,
-      toAddress: to,
-      tokenId: tokenId,
-      amount: amount,
-      status: status,
-      blockNumber: BigInt(event.block.number),
-      transactionHash: event.transaction.hash,
-      timestamp: BigInt(event.block.timestamp),
-    })
-    .onConflictDoUpdate(status ? { status } : {});
-
-  // Mint SLOW
-  if (from !== "0x0000000000000000000000000000000000000000") {
-    const fromBalanceExists = await context.db.find(balance, {
-      userAddress: from,
-      tokenId: tokenId,
+  // Only record actual transfers (not mints/burns)
+  if (!isMint && !isBurn) {
+    const transferId = await client.readContract({
+      abi: SLOW.abi,
+      address: SLOW.address,
+      functionName: "predictTransferId",
+      args: [from, to, tokenId, amount],
     });
 
-    if (fromBalanceExists) {
-      await context.db
-        .update(balance, { userAddress: from, tokenId: tokenId })
-        .set((row) => ({
-          totalBalance: (row.totalBalance || BigInt(0)) - BigInt(amount),
-          unlockedBalance: (row.unlockedBalance || BigInt(0)) - BigInt(amount),
-        }));
-    }
+    await context.db
+      .insert(transfer)
+      .values({
+        id: transferId,
+        fromAddress: from,
+        toAddress: to,
+        tokenId: tokenId,
+        amount: amount,
+        blockNumber: BigInt(event.block.number),
+        transactionHash: event.transaction.hash,
+        timestamp: BigInt(event.block.timestamp),
+      })
+      .onConflictDoNothing();
   }
 
-  // Burn SLOW
-  if (to !== "0x0000000000000000000000000000000000000000") {
-    const toBalanceExists = await context.db.find(balance, {
-      userAddress: to,
-      tokenId: tokenId,
-    });
+  // Update balances correctly
+  if (!isMint) {
+    // This is a transfer or burn - update sender balance
+    await context.db
+      .insert(balance)
+      .values({
+        userAddress: from,
+        tokenId: tokenId,
+        totalBalance: -BigInt(amount),
+        unlockedBalance: 0n, // Let the contract events determine unlocked balance
+      })
+      .onConflictDoUpdate((row) => ({
+        totalBalance: (row.totalBalance || 0n) - BigInt(amount),
+      }));
+  }
 
-    if (toBalanceExists) {
-      await context.db
-        .update(balance, { userAddress: to, tokenId: tokenId })
-        .set((row) => ({
-          totalBalance: (row.totalBalance || BigInt(0)) + BigInt(amount),
-          unlockedBalance: (row.unlockedBalance || BigInt(0)) + BigInt(amount),
-        }));
-    } else {
-      await context.db.insert(balance).values({
+  if (!isBurn) {
+    // This is a mint or transfer - update receiver balance
+    await context.db
+      .insert(balance)
+      .values({
         userAddress: to,
         tokenId: tokenId,
         totalBalance: BigInt(amount),
-        unlockedBalance: BigInt(amount),
-      });
-    }
+        unlockedBalance: 0n, // Let the contract events determine unlocked balance
+      })
+      .onConflictDoUpdate((row) => ({
+        totalBalance: (row.totalBalance || 0n) + BigInt(amount),
+      }));
   }
 });
 
@@ -224,7 +252,7 @@ ponder.on("SLOW:URI", async ({ event, context }) => {
   // Event args: value (string), id (uint256)
   const { id } = event.args;
 
-  const tokenId = id.toString();
+  const tokenId = BigInt(id.toString());
   const existingToken = await context.db.find(token, { id: tokenId });
   if (existingToken) {
     await context.db
