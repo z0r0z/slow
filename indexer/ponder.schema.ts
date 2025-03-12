@@ -69,13 +69,13 @@ export const balanceRelation = relations(balance, ({ one }) => ({
 export const transfer = onchainTable("transfer", (t) => ({
   id: t.bigint().primaryKey(), // transaction hash + log index
 
-  fromAddress: t.hex(),
-  toAddress: t.hex(),
-  tokenId: t.bigint(),
-  amount: t.bigint(),
-  expiryTimestamp: t.bigint(),
+  fromAddress: t.hex().notNull(),
+  toAddress: t.hex().notNull(),
+  tokenId: t.bigint().notNull(),
+  amount: t.bigint().notNull(),
+  expiryTimestamp: t.bigint().notNull(),
 
-  status: transferStatus(),
+  status: transferStatus().notNull(),
 
   blockNumber: t.bigint(),
   transactionHash: t.hex(),
