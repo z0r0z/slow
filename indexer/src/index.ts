@@ -187,7 +187,7 @@ ponder.on("SLOW:TransferSingle", async ({ event, context }) => {
 
   // For actual transfers (not mints/burns), track the transferId
   if (!isMint && !isBurn) {
-    // update balance of sender and reciver
+    // update balance of sender and receiver
     const fromBalance = await client.readContract({
       address: SLOW.address,
       abi: SLOW.abi,
@@ -200,6 +200,18 @@ ponder.on("SLOW:TransferSingle", async ({ event, context }) => {
       functionName: "balanceOf",
       args: [to, id],
     });
+    const unlockedBalanceFrom = await client.readContract({
+      address: SLOW.address,
+      abi: SLOW.abi,
+      functionName: "unlockedBalances",
+      args: [from, id],
+    });
+    const unlockedBalanceTo = await client.readContract({
+      address: SLOW.address,
+      abi: SLOW.abi,
+      functionName: "unlockedBalances",
+      args: [to, id],
+    });
 
     await db
       .insert(balance)
@@ -207,9 +219,11 @@ ponder.on("SLOW:TransferSingle", async ({ event, context }) => {
         userAddress: from,
         tokenId: id,
         totalBalance: fromBalance,
+        unlockedBalance: unlockedBalanceFrom,
       })
       .onConflictDoUpdate({
         totalBalance: fromBalance,
+        unlockedBalance: unlockedBalanceFrom,
       });
 
     await db
@@ -218,12 +232,14 @@ ponder.on("SLOW:TransferSingle", async ({ event, context }) => {
         userAddress: to,
         tokenId: id,
         totalBalance: toBalance,
+        unlockedBalance: unlockedBalanceTo,
       })
       .onConflictDoUpdate({
         totalBalance: toBalance,
+        unlockedBalance: unlockedBalanceTo,
       });
   } else if (isBurn && !isMint) {
-    // Update receiver's balance (for transfers and mints
+    // Update receiver's balance (for transfers and mints)
     const fromBalance = await client.readContract({
       address: SLOW.address,
       abi: SLOW.abi,
