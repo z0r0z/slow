@@ -198,59 +198,56 @@ ponder.on("SLOW:TransferSingle", async ({ event, context }) => {
     data: event.transaction.input,
   });
 
-  // For actual transfers (not mints/burns), track the transferId
-  if (!isMint && !isBurn) {
-    let status = null;
-    if (functionName === "multicall" && args[0]?.length > 0) {
-      for (let i = 0; i < args[0].length; i++) {
-        const callData = args[0][i];
-        if (callData === undefined) continue;
-        try {
-          const decoded = decodeFunctionData({
-            abi: SLOW.abi,
-            data: callData,
-          });
-
-          if (decoded.functionName === "unlock") {
-            status = "UNLOCKED";
-          } else if (decoded.functionName === "reverse") {
-            status = "REVERSED";
-          }
-        } catch (error) {
-          console.error("Failed to decode function data:", error);
-        }
-      }
-    } else if (functionName === "unlock") {
-      status = "UNLOCKED";
-    } else if (functionName === "reverse") {
-      status = "REVERSED";
-    }
-
-    if (status !== null) {
-      // update transfer status
-      const transferId = await client.readContract({
-        address: SLOW.address,
+  let status = null;
+  if (functionName === "multicall" && args[0]?.length > 0) {
+    const calls = args[0];
+    for (const call of calls) {
+      const decoded = decodeFunctionData({
         abi: SLOW.abi,
-        functionName: "predictTransferId",
-        args: [from, to, id, amount],
+        data: call,
       });
 
-      await db
-        .insert(transfer)
-        .values({
-          id: transferId,
-          tokenId: id,
-          fromAddress: from,
-          toAddress: to,
-          amount,
-          // @ts-expect-error
-          status,
-        })
-        .onConflictDoUpdate({
-          // @ts-expect-error
-          status,
-        });
+      // note: having both reverse and unlock in same multicall batch is not possible as reverse will revert if unlockable and unlock will revert if reverseable
+      if (decoded.functionName === "unlock") {
+        status = "UNLOCKED";
+      } else if (decoded.functionName === "reverse") {
+        status = "REVERSED";
+      }
     }
+  } else if (functionName === "unlock") {
+    status = "UNLOCKED";
+  } else if (functionName === "reverse") {
+    status = "REVERSED";
+  }
+
+  if (status !== null) {
+    // update transfer status
+    const transferId = await client.readContract({
+      address: SLOW.address,
+      abi: SLOW.abi,
+      functionName: "predictTransferId",
+      args: [from, to, id, amount],
+    });
+
+    await db
+      .insert(transfer)
+      .values({
+        id: transferId,
+        tokenId: id,
+        fromAddress: from,
+        toAddress: to,
+        amount,
+        // @ts-expect-error
+        status,
+      })
+      .onConflictDoUpdate({
+        // @ts-expect-error
+        status,
+      });
+  }
+
+  // For actual transfers (not mints/burns), track the transferId
+  if (!isMint && !isBurn) {
     // update balance of sender and receiver
     const fromBalance = await client.readContract({
       address: SLOW.address,
