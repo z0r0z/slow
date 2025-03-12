@@ -6,8 +6,6 @@ export const transferStatus = onchainEnum("status", [
   "APPROVED",
   "REVERSED",
   "UNLOCKED",
-  "EXPIRED",
-  "TRANSFERRED",
 ]);
 
 // Table for tracking users and their guardians
@@ -73,9 +71,9 @@ export const transfer = onchainTable("transfer", (t) => ({
   toAddress: t.hex().notNull(),
   tokenId: t.bigint().notNull(),
   amount: t.bigint().notNull(),
-  expiryTimestamp: t.bigint().notNull(),
+  expiryTimestamp: t.bigint(),
 
-  status: transferStatus().notNull(),
+  status: transferStatus("status").notNull(),
 
   blockNumber: t.bigint(),
   transactionHash: t.hex(),

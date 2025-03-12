@@ -7,8 +7,9 @@ import {
   guardianSetEvent,
   transferApprovedEvent,
   unlockEvent,
+  transferStatus,
 } from "ponder:schema";
-import { erc20Abi, zeroAddress } from "viem";
+import { decodeFunctionData, erc20Abi, zeroAddress } from "viem";
 
 ponder.on("SLOW:GuardianSet", async ({ event, context }) => {
   // Event args: user (address), guardian (address)
@@ -74,6 +75,13 @@ ponder.on("SLOW:TransferPending", async ({ event, context }) => {
   });
   const [_, from, to, tokenId, amount] = pendingTransfer;
 
+  const approvalRequired = await client.readContract({
+    address: SLOW.address,
+    abi: SLOW.abi,
+    functionName: "isGuardianApprovalNeeded",
+    args: [from, to, tokenId, amount],
+  });
+
   const fromNonce = await client.readContract({
     address: SLOW.address,
     abi: SLOW.abi,
@@ -122,7 +130,7 @@ ponder.on("SLOW:TransferPending", async ({ event, context }) => {
     tokenId: tokenId,
     amount: amount,
     expiryTimestamp,
-    status: "PENDING",
+    status: approvalRequired ? "APPROVAL_REQUIRED" : "PENDING",
     blockNumber: BigInt(event.block.number),
     transactionHash: event.transaction.hash,
     timestamp: BigInt(event.block.timestamp),
@@ -185,8 +193,64 @@ ponder.on("SLOW:TransferSingle", async ({ event, context }) => {
   const isMint = from === "0x0000000000000000000000000000000000000000";
   const isBurn = to === "0x0000000000000000000000000000000000000000";
 
+  const { functionName, args } = decodeFunctionData({
+    abi: SLOW.abi,
+    data: event.transaction.input,
+  });
+
   // For actual transfers (not mints/burns), track the transferId
   if (!isMint && !isBurn) {
+    let status = null;
+    if (functionName === "multicall" && args[0]?.length > 0) {
+      for (let i = 0; i < args[0].length; i++) {
+        const callData = args[0][i];
+        if (callData === undefined) continue;
+        try {
+          const decoded = decodeFunctionData({
+            abi: SLOW.abi,
+            data: callData,
+          });
+
+          if (decoded.functionName === "unlock") {
+            status = "UNLOCKED";
+          } else if (decoded.functionName === "reverse") {
+            status = "REVERSED";
+          }
+        } catch (error) {
+          console.error("Failed to decode function data:", error);
+        }
+      }
+    } else if (functionName === "unlock") {
+      status = "UNLOCKED";
+    } else if (functionName === "reverse") {
+      status = "REVERSED";
+    }
+
+    if (status !== null) {
+      // update transfer status
+      const transferId = await client.readContract({
+        address: SLOW.address,
+        abi: SLOW.abi,
+        functionName: "predictTransferId",
+        args: [from, to, id, amount],
+      });
+
+      await db
+        .insert(transfer)
+        .values({
+          id: transferId,
+          tokenId: id,
+          fromAddress: from,
+          toAddress: to,
+          amount,
+          // @ts-expect-error
+          status,
+        })
+        .onConflictDoUpdate({
+          // @ts-expect-error
+          status,
+        });
+    }
     // update balance of sender and receiver
     const fromBalance = await client.readContract({
       address: SLOW.address,
@@ -302,16 +366,41 @@ ponder.on("SLOW:URI", async ({ event, context }) => {
 ponder.on("SLOW:Unlocked", async ({ event, context }) => {
   // Event args: user (address), id (uint256), amount (uint256)
   const { user: userAddress, id: tokenId, amount } = event.args;
-
-  await context.db.insert(unlockEvent).values({
-    id: `${event.transaction.hash}-${event.log.logIndex}`,
-    blockNumber: BigInt(event.block.number),
-    transactionHash: event.transaction.hash,
-    timestamp: BigInt(event.block.timestamp),
-    userAddress: userAddress,
-    tokenId: tokenId,
-    amount: amount,
+  const {
+    contracts: { SLOW },
+  } = context;
+  const callData = event.transaction.input;
+  const decoded = decodeFunctionData({
+    abi: SLOW.abi,
+    data: callData,
   });
+
+  let transferId;
+  if (decoded.functionName === "multicall") {
+    const calls = decoded.args[0];
+    for (const call of calls) {
+      const { functionName, args } = decodeFunctionData({
+        abi: SLOW.abi,
+        data: call,
+      });
+
+      if (functionName === "unlock") {
+        transferId = args[0];
+      }
+    }
+  } else if (decoded.functionName === "unlock") {
+    transferId = decoded.args[0];
+  }
+
+  if (transferId) {
+    await context.db
+      .update(transfer, {
+        id: transferId,
+      })
+      .set({
+        status: "UNLOCKED",
+      });
+  }
 
   await context.db
     .insert(balance)
