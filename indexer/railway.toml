@@ -1,0 +1,10 @@
+[build]
+builder = "nixpacks"
+buildCommand = "echo building!"
+
+[deploy]
+preDeployCommand = []
+startCommand = "pnpm start --schema $RAILWAY_DEPLOYMENT_ID"
+healthcheckPath = "/ready"
+healthcheckTimeout = 86400
+restartPolicyType = "never"
