@@ -4,7 +4,7 @@ import { encodeFunctionData } from 'viem';
 import { SlowAbi } from '../../abis/SlowAbi';
 
 // Indexer URL
-const INDEXER_URL = "https://slow-production-3176.up.railway.app/";
+const INDEXER_URL = "https://slow-production-3176.up.railway.app";
 
 // Cache for pending transfers
 let transfersCache = {
@@ -16,80 +16,37 @@ let transfersCache = {
 };
 
 /**
- * Fetch user data from the indexer
+ * Fetch transfers from the indexer using the REST API
  * @param {string} address - User address
- * @returns {Promise<Object>} - User data from indexer
+ * @param {string} type - Type of transfers (outbound or inbound)
+ * @param {string} status - Status to filter by (PENDING, APPROVAL_REQUIRED, etc.)
+ * @returns {Promise<Array>} - Array of transfers
  */
-async function fetchUserFromIndexer(address) {
+async function fetchTransfersFromIndexer(address, type = 'outbound', status = 'PENDING') {
   try {
     if (!address) {
       throw new Error("Address is required");
     }
 
     const userAddress = address.toLowerCase();
+    const url = `${INDEXER_URL}/transfers/${userAddress}?type=${type}&status=${status}`;
     
-    const query = `
-      query GetUser {
-        user(id: "${userAddress}") {
-          guardian
-          id
-          lastGuardianChange
-          nonce
-          transfers {
-            totalCount
-            items {
-              amount
-              blockNumber
-              expiryTimestamp
-              fromAddress
-              id
-              status
-              timestamp
-              toAddress
-              tokenId
-              transactionHash
-              token {
-                address
-                decimals
-                delaySeconds
-                name
-                symbol
-              }
-            }
-          }
-        }
-      }
-    `;
-
-    const response = await fetch(INDEXER_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query
-      }),
-    });
+    const response = await fetch(url);
 
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    const data = await response.json();
-    
-    if (data.errors) {
-      throw new Error(`GraphQL error: ${JSON.stringify(data.errors)}`);
-    }
-
-    return data.data.user;
+    const transfers = await response.json();
+    return transfers;
   } catch (error) {
-    console.error("Error fetching user from indexer:", error);
+    console.error(`Error fetching ${type} transfers from indexer:`, error);
     throw error;
   }
 }
 
 /**
- * Load pending transfers for a user using the indexer
+ * Load transfers for a user using the indexer
  * @param {Object} params - Parameters for loading transfers
  * @returns {Promise<Object>} Result with transfers
  */
@@ -127,73 +84,19 @@ export async function loadPendingTransfers({
       };
     }
 
-    // Fetch user data from indexer for their outbound transfers
-    const userData = await fetchUserFromIndexer(address);
+    // Fetch both outbound and inbound pending transfers in parallel
+    const [outboundTransfers, inboundTransfers] = await Promise.all([
+      fetchTransfersFromIndexer(address, 'outbound', 'PENDING'),
+      fetchTransfersFromIndexer(address, 'inbound', 'PENDING')
+    ]);
     
-    if (!userData || !userData.transfers || !userData.transfers.items) {
-      transfersCache.loading = false;
-      return { success: false, message: "No transfer data found" };
-    }
-
-    // We need to also query for inbound transfers separately
-    // The indexer query at the user level gives us transfers FROM this user
-    // But we also need to query for transfers TO this user
-    const queryInbound = `
-      query GetInboundTransfers {
-        transfers(
-          where: { 
-            toAddress: "${address.toLowerCase()}",
-            status: "PENDING"
-          }
-        ) {
-          totalCount
-          items {
-            amount
-            blockNumber
-            expiryTimestamp
-            fromAddress
-            id
-            status
-            timestamp
-            toAddress
-            tokenId
-            transactionHash
-            token {
-              address
-              decimals
-              delaySeconds
-              name
-              symbol
-            }
-          }
-        }
-      }
-    `;
-
-    // Execute query for inbound transfers
-    const inboundResponse = await fetch(INDEXER_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        query: queryInbound
-      }),
-    });
-
     // Process outbound and inbound transfers
     const outbound = [];
     const inbound = [];
     const unlockedIds = new Set(transfersCache.unlockedTransferIds);
     
-    // Process outbound transfers (from user's data)
-    const transfers = userData.transfers.items;
-    const pendingOutboundTransfers = transfers.filter(transfer => 
-      transfer.status === 'PENDING'
-    );
-
-    // Process outbound transfers first
-    for (const transfer of pendingOutboundTransfers) {
+    // Process outbound transfers
+    for (const transfer of outboundTransfers) {
       // Skip if in our unlocked set
       if (unlockedIds.has(transfer.id)) {
         continue;
@@ -204,7 +107,7 @@ export async function loadPendingTransfers({
         id: transfer.id,
         from: transfer.fromAddress,
         to: transfer.toAddress,
-        tokenId: transfer.tokenId,
+        tokenId: transfer.token?.id || null,
         amount: transfer.amount,
       };
 
@@ -212,8 +115,9 @@ export async function loadPendingTransfers({
       if (isDetailed) {
         const token = transfer.token;
         const delay = token ? Number(token.delaySeconds) : 0;
-        const timestamp = Number(transfer.timestamp);
+        // Calculate timestamp from expiryTimestamp - delay
         const unlockTime = Number(transfer.expiryTimestamp);
+        const timestamp = unlockTime - delay;
 
         // Format amount using token decimals
         const decimals = token ? Number(token.decimals) : 18;
@@ -233,51 +137,44 @@ export async function loadPendingTransfers({
     }
     
     // Process inbound transfers
-    if (inboundResponse.ok) {
-      const inboundData = await inboundResponse.json();
-      
-      if (inboundData.data && inboundData.data.transfers && inboundData.data.transfers.items) {
-        const inboundTransfers = inboundData.data.transfers.items;
-        
-        for (const transfer of inboundTransfers) {
-          // Skip if in our unlocked set
-          if (unlockedIds.has(transfer.id)) {
-            continue;
-          }
-          
-          // Create basic transfer object
-          const transferData = {
-            id: transfer.id,
-            from: transfer.fromAddress,
-            to: transfer.toAddress,
-            tokenId: transfer.tokenId,
-            amount: transfer.amount,
-          };
-
-          // Add detailed information if requested
-          if (isDetailed) {
-            const token = transfer.token;
-            const delay = token ? Number(token.delaySeconds) : 0;
-            const timestamp = Number(transfer.timestamp);
-            const unlockTime = Number(transfer.expiryTimestamp);
-
-            // Format amount using token decimals
-            const decimals = token ? Number(token.decimals) : 18;
-            const formattedAmount = Number(transfer.amount) / (10 ** decimals);
-
-            Object.assign(transferData, {
-              token: token ? token.address : null,
-              symbol: token ? token.symbol : "???",
-              amount: formattedAmount,
-              timestamp: timestamp,
-              delay: delay,
-              unlockTime: unlockTime,
-            });
-          }
-
-          inbound.push(transferData);
-        }
+    for (const transfer of inboundTransfers) {
+      // Skip if in our unlocked set
+      if (unlockedIds.has(transfer.id)) {
+        continue;
       }
+      
+      // Create basic transfer object
+      const transferData = {
+        id: transfer.id,
+        from: transfer.fromAddress,
+        to: transfer.toAddress,
+        tokenId: transfer.token?.id || null,
+        amount: transfer.amount,
+      };
+
+      // Add detailed information if requested
+      if (isDetailed) {
+        const token = transfer.token;
+        const delay = token ? Number(token.delaySeconds) : 0;
+        // Calculate timestamp from expiryTimestamp - delay
+        const unlockTime = Number(transfer.expiryTimestamp);
+        const timestamp = unlockTime - delay;
+
+        // Format amount using token decimals
+        const decimals = token ? Number(token.decimals) : 18;
+        const formattedAmount = Number(transfer.amount) / (10 ** decimals);
+
+        Object.assign(transferData, {
+          token: token ? token.address : null,
+          symbol: token ? token.symbol : "???",
+          amount: formattedAmount,
+          timestamp: timestamp,
+          delay: delay,
+          unlockTime: unlockTime,
+        });
+      }
+
+      inbound.push(transferData);
     }
 
     // Sort transfers by unlock time (ascending)
