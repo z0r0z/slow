@@ -7,7 +7,6 @@ import {
   guardianSetEvent,
   transferApprovedEvent,
   unlockEvent,
-  transferStatus,
 } from "ponder:schema";
 import { decodeFunctionData, erc20Abi, zeroAddress } from "viem";
 
@@ -123,6 +122,7 @@ ponder.on("SLOW:TransferPending", async ({ event, context }) => {
 
   const expiryTimestamp = BigInt(event.block.timestamp) + BigInt(delay);
 
+  // insert `transfer` record
   await context.db.insert(transfer).values({
     id: transferId,
     fromAddress: from,
@@ -409,4 +409,15 @@ ponder.on("SLOW:Unlocked", async ({ event, context }) => {
     .onConflictDoUpdate((row) => ({
       unlockedBalance: (row.unlockedBalance ?? 0n) + BigInt(amount),
     }));
+
+  await context.db.insert(unlockEvent).values({
+    id: `${event.transaction.hash}-${event.log.logIndex}`,
+    blockNumber: BigInt(event.block.number),
+    transactionHash: event.transaction.hash,
+    timestamp: BigInt(event.block.timestamp),
+    userAddress: userAddress,
+    tokenId: tokenId,
+    amount: BigInt(amount),
+    transferId: transferId,
+  });
 });
