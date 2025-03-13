@@ -10,7 +10,7 @@
     "typecheck": "tsc"
   },
   "dependencies": {
-    "ponder": "^0.9.27",
+    "ponder": "^0.9.28",
     "hono": "^4.5.0",
     "viem": "^2.21.3"
   },
