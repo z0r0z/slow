@@ -17,12 +17,6 @@ export const user = onchainTable("user", (t) => ({
 }));
 
 export const userRelation = relations(user, ({ many }) => ({
-  inboundTransfers: many(transfer, {
-    relationName: "to",
-  }),
-  outboundTransfers: many(transfer, {
-    relationName: "from",
-  }),
   balances: many(balance),
 }));
 
@@ -86,16 +80,6 @@ export const transfer = onchainTable("transfer", (t) => ({
 }));
 
 export const transferRelation = relations(transfer, ({ one }) => ({
-  from: one(user, {
-    fields: [transfer.fromAddress],
-    references: [user.id],
-    relationName: "outboundTransfers",
-  }),
-  to: one(user, {
-    fields: [transfer.toAddress],
-    references: [user.id],
-    relationName: "inboundTransfers",
-  }),
   token: one(token, {
     fields: [transfer.tokenId],
     references: [token.id],

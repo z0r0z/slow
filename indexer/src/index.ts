@@ -226,17 +226,10 @@ ponder.on("SLOW:TransferSingle", async ({ event, context }) => {
     }
     if (status !== null && transferId !== null) {
       await db
-        .insert(transfer)
-        .values({
+        .update(transfer, {
           id: transferId,
-          tokenId: id,
-          fromAddress: from,
-          toAddress: to,
-          amount,
-          // @ts-expect-error
-          status,
         })
-        .onConflictDoUpdate({
+        .set({
           // @ts-expect-error
           status,
         });
