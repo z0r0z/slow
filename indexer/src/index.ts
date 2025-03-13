@@ -100,9 +100,9 @@ ponder.on("SLOW:TransferPending", async ({ event, context }) => {
     .insert(user)
     .values({
       id: from,
-      guardian: "0x0000000000000000000000000000000000000000", // Default value
+      guardian: "0x0000000000000000000000000000000000000000",
       lastGuardianChange: 0n,
-      nonce: 0n,
+      nonce: fromNonce,
     })
     .onConflictDoUpdate({
       nonce: fromNonce,
@@ -112,9 +112,9 @@ ponder.on("SLOW:TransferPending", async ({ event, context }) => {
     .insert(user)
     .values({
       id: to,
-      guardian: "0x0000000000000000000000000000000000000000", // Default value
+      guardian: "0x0000000000000000000000000000000000000000",
       lastGuardianChange: 0n,
-      nonce: 0n,
+      nonce: toNonce,
     })
     .onConflictDoUpdate({
       nonce: toNonce,
@@ -193,61 +193,55 @@ ponder.on("SLOW:TransferSingle", async ({ event, context }) => {
   const isMint = from === "0x0000000000000000000000000000000000000000";
   const isBurn = to === "0x0000000000000000000000000000000000000000";
 
-  const { functionName, args } = decodeFunctionData({
-    abi: SLOW.abi,
-    data: event.transaction.input,
-  });
-
-  let status = null;
-  if (functionName === "multicall" && args[0]?.length > 0) {
-    const calls = args[0];
-    for (const call of calls) {
-      const decoded = decodeFunctionData({
-        abi: SLOW.abi,
-        data: call,
-      });
-
-      // note: having both reverse and unlock in same multicall batch is not possible as reverse will revert if unlockable and unlock will revert if reverseable
-      if (decoded.functionName === "unlock") {
-        status = "UNLOCKED";
-      } else if (decoded.functionName === "reverse") {
-        status = "REVERSED";
-      }
-    }
-  } else if (functionName === "unlock") {
-    status = "UNLOCKED";
-  } else if (functionName === "reverse") {
-    status = "REVERSED";
-  }
-
-  if (status !== null) {
-    // update transfer status
-    const transferId = await client.readContract({
-      address: SLOW.address,
-      abi: SLOW.abi,
-      functionName: "predictTransferId",
-      args: [from, to, id, amount],
-    });
-
-    await db
-      .insert(transfer)
-      .values({
-        id: transferId,
-        tokenId: id,
-        fromAddress: from,
-        toAddress: to,
-        amount,
-        // @ts-expect-error
-        status,
-      })
-      .onConflictDoUpdate({
-        // @ts-expect-error
-        status,
-      });
-  }
-
   // For actual transfers (not mints/burns), track the transferId
   if (!isMint && !isBurn) {
+    const { functionName, args } = decodeFunctionData({
+      abi: SLOW.abi,
+      data: event.transaction.input,
+    });
+
+    let status = null;
+    let transferId = null;
+    if (functionName === "multicall") {
+      const calls = args[0];
+      for (const call of calls) {
+        const decoded = decodeFunctionData({
+          abi: SLOW.abi,
+          data: call,
+        });
+
+        // note: having both reverse and unlock in same multicall batch is not possible as reverse will revert if unlockable and unlock will revert if reverseable
+        if (decoded.functionName === "unlock") {
+          status = "UNLOCKED";
+          transferId = decoded.args[0];
+        } else if (decoded.functionName === "reverse") {
+          status = "REVERSED";
+          transferId = decoded.args[0];
+        }
+      }
+    } else if (functionName === "unlock") {
+      status = "UNLOCKED";
+    } else if (functionName === "reverse") {
+      status = "REVERSED";
+    }
+    if (status !== null && transferId !== null) {
+      await db
+        .insert(transfer)
+        .values({
+          id: transferId,
+          tokenId: id,
+          fromAddress: from,
+          toAddress: to,
+          amount,
+          // @ts-expect-error
+          status,
+        })
+        .onConflictDoUpdate({
+          // @ts-expect-error
+          status,
+        });
+    }
+
     // update balance of sender and receiver
     const fromBalance = await client.readContract({
       address: SLOW.address,
