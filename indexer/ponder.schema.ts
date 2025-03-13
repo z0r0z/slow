@@ -81,8 +81,12 @@ export const transfer = onchainTable("transfer", (t) => ({
 }));
 
 export const transferRelation = relations(transfer, ({ one }) => ({
-  user: one(user, {
+  from: one(user, {
     fields: [transfer.fromAddress],
+    references: [user.id],
+  }),
+  to: one(user, {
+    fields: [transfer.toAddress],
     references: [user.id],
   }),
   token: one(token, {
