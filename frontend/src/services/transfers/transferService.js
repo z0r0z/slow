@@ -1,11 +1,10 @@
 import { getSlowContract, getTokenDecimals } from '../wallet/walletService';
-import { SLOW_CONTRACT_ADDRESS } from '../wallet/walletService';
 import { formatTimeDiff } from '../utils';
 import { encodeFunctionData } from 'viem';
 import { SlowAbi } from '../../abis/SlowAbi';
 
-// Deployment block of the SLOW contract
-const SLOW_DEPLOYMENT_BLOCK = 27245775;
+// Indexer URL
+const INDEXER_URL = "https://slow-production-3176.up.railway.app/";
 
 // Cache for pending transfers
 let transfersCache = {
@@ -17,7 +16,80 @@ let transfersCache = {
 };
 
 /**
- * Load pending transfers for a user
+ * Fetch user data from the indexer
+ * @param {string} address - User address
+ * @returns {Promise<Object>} - User data from indexer
+ */
+async function fetchUserFromIndexer(address) {
+  try {
+    if (!address) {
+      throw new Error("Address is required");
+    }
+
+    const userAddress = address.toLowerCase();
+    
+    const query = `
+      query GetUser {
+        user(id: "${userAddress}") {
+          guardian
+          id
+          lastGuardianChange
+          nonce
+          transfers {
+            totalCount
+            items {
+              amount
+              blockNumber
+              expiryTimestamp
+              fromAddress
+              id
+              status
+              timestamp
+              toAddress
+              tokenId
+              transactionHash
+              token {
+                address
+                decimals
+                delaySeconds
+                name
+                symbol
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const response = await fetch(INDEXER_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    if (data.errors) {
+      throw new Error(`GraphQL error: ${JSON.stringify(data.errors)}`);
+    }
+
+    return data.data.user;
+  } catch (error) {
+    console.error("Error fetching user from indexer:", error);
+    throw error;
+  }
+}
+
+/**
+ * Load pending transfers for a user using the indexer
  * @param {Object} params - Parameters for loading transfers
  * @returns {Promise<Object>} Result with transfers
  */
@@ -27,16 +99,17 @@ export async function loadPendingTransfers({
   slowContract = getSlowContract(),
   isDetailed = true
 }) {
-  if (!address || !publicClient || !slowContract || transfersCache.loading) {
-    return { success: false, message: "Can't load transfers" };
+  if (!address) {
+    return { success: false, message: "Address is required" };
+  }
+
+  if (transfersCache.loading) {
+    return { success: false, message: "Already loading transfers" };
   }
 
   try {
     // Set loading state
     transfersCache.loading = true;
-
-    // Get block number
-    const currentBlock = await publicClient.getBlockNumber();
 
     // Determine if we need to refresh the data
     const now = Date.now();
@@ -44,226 +117,167 @@ export async function loadPendingTransfers({
                           transfersCache.outbound.length === 0 && 
                           transfersCache.inbound.length === 0;
 
-    // Get events
-    let events = [];
-    if (shouldRefresh) {
-      // Query for TransferPending events
-      const blocksToSearch = Number(currentBlock) - SLOW_DEPLOYMENT_BLOCK;
-      const CHUNK_SIZE = 10000; // Adjust based on RPC provider limits
-
-      if (blocksToSearch > CHUNK_SIZE) {
-        // Query in chunks to avoid RPC timeouts for large ranges
-        let startBlock = SLOW_DEPLOYMENT_BLOCK;
-        while (startBlock < Number(currentBlock)) {
-          const endBlock = Math.min(startBlock + CHUNK_SIZE, Number(currentBlock));
-
-          console.log(`Querying events from block ${startBlock} to ${endBlock}`);
-
-          const chunkEvents = await publicClient.getLogs({
-            address: SLOW_CONTRACT_ADDRESS,
-            event: {
-              anonymous: false,
-              inputs: [
-                { indexed: true, name: 'transferId', type: 'uint256' },
-                { indexed: true, name: 'delay', type: 'uint256' }
-              ],
-              name: 'TransferPending',
-              type: 'event'
-            },
-            fromBlock: BigInt(startBlock),
-            toBlock: BigInt(endBlock)
-          });
-          
-          events = [...events, ...chunkEvents];
-          startBlock = endBlock + 1;
-        }
-      } else {
-        // For smaller ranges, query all at once
-        events = await publicClient.getLogs({
-          address: SLOW_CONTRACT_ADDRESS,
-          event: {
-            anonymous: false,
-            inputs: [
-              { indexed: true, name: 'transferId', type: 'uint256' },
-              { indexed: true, name: 'delay', type: 'uint256' }
-            ],
-            name: 'TransferPending',
-            type: 'event'
-          },
-          fromBlock: BigInt(SLOW_DEPLOYMENT_BLOCK),
-          toBlock: BigInt(currentBlock)
-        });
-      }
-
-      // Now fetch Unlocked events to track which transfers have been processed
-      let unlockedEvents = [];
-
-      if (blocksToSearch > CHUNK_SIZE) {
-        // Query in chunks to avoid RPC timeouts
-        let startBlock = SLOW_DEPLOYMENT_BLOCK;
-        while (startBlock < Number(currentBlock)) {
-          const endBlock = Math.min(startBlock + CHUNK_SIZE, Number(currentBlock));
-
-          console.log(`Querying unlocked events from block ${startBlock} to ${endBlock}`);
-
-          const chunkEvents = await publicClient.getLogs({
-            address: SLOW_CONTRACT_ADDRESS,
-            event: {
-              anonymous: false,
-              inputs: [
-                { indexed: true, name: 'user', type: 'address' },
-                { indexed: true, name: 'id', type: 'uint256' },
-                { indexed: true, name: 'amount', type: 'uint256' }
-              ],
-              name: 'Unlocked',
-              type: 'event'
-            },
-            fromBlock: BigInt(startBlock),
-            toBlock: BigInt(endBlock)
-          });
-          
-          unlockedEvents = [...unlockedEvents, ...chunkEvents];
-          startBlock = endBlock + 1;
-        }
-      } else {
-        unlockedEvents = await publicClient.getLogs({
-          address: SLOW_CONTRACT_ADDRESS,
-          event: {
-            anonymous: false,
-            inputs: [
-              { indexed: true, name: 'user', type: 'address' },
-              { indexed: true, name: 'id', type: 'uint256' },
-              { indexed: true, name: 'amount', type: 'uint256' }
-            ],
-            name: 'Unlocked',
-            type: 'event'
-          },
-          fromBlock: BigInt(SLOW_DEPLOYMENT_BLOCK),
-          toBlock: BigInt(currentBlock)
-        });
-      }
-
-      // Build a set of unlocked transfer IDs
-      const unlockedIds = new Set();
-      for (const event of unlockedEvents) {
-        if (event.args && event.args.id) {
-          unlockedIds.add(event.args.id.toString());
-        }
-      }
-
-      // Store in cache
-      transfersCache.unlockedTransferIds = unlockedIds;
-      transfersCache.lastUpdated = now;
+    if (!shouldRefresh) {
+      // Return cached data
+      transfersCache.loading = false;
+      return {
+        success: true,
+        outbound: transfersCache.outbound,
+        inbound: transfersCache.inbound
+      };
     }
 
-    const outbound = [];
-    const inbound = [];
-
-    // Use a map to track processed transfers
-    const processedTransfers = new Map();
-
-    // Process transfers in batches
-    const batchSize = 20;
-    const transferBatches = [];
-    for (let i = 0; i < events.length; i += batchSize) {
-      transferBatches.push(events.slice(i, i + batchSize));
+    // Fetch user data from indexer for their outbound transfers
+    const userData = await fetchUserFromIndexer(address);
+    
+    if (!userData || !userData.transfers || !userData.transfers.items) {
+      transfersCache.loading = false;
+      return { success: false, message: "No transfer data found" };
     }
 
-    // Process each batch
-    for (const batch of transferBatches) {
-      const batchPromises = batch.map(async (event) => {
-        const transferId = event.args.transferId.toString();
-
-        // Skip if already processed
-        if (processedTransfers.has(transferId)) return null;
-        processedTransfers.set(transferId, true);
-
-        try {
-          const transfer = await slowContract.read.pendingTransfers([transferId]);
-
-          // Skip if unlocked or reversed
-          if (transfer[0] === 0n) {
-            return null;
+    // We need to also query for inbound transfers separately
+    // The indexer query at the user level gives us transfers FROM this user
+    // But we also need to query for transfers TO this user
+    const queryInbound = `
+      query GetInboundTransfers {
+        transfers(
+          where: { 
+            toAddress: "${address.toLowerCase()}",
+            status: "PENDING"
           }
-
-          // Skip if in our unlocked set
-          if (transfersCache.unlockedTransferIds.has(transferId)) {
-            return null;
-          }
-
-          // Check if this transfer involves the current user
-          const isFromUser = transfer[1].toLowerCase() === address.toLowerCase();
-          const isToUser = transfer[2].toLowerCase() === address.toLowerCase();
-
-          if (!isFromUser && !isToUser) return null;
-
-          // Only add basic info if detailed view not requested
-          if (!isDetailed) {
-            const basic = {
-              id: transferId,
-              from: transfer[1],
-              to: transfer[2],
-              tokenId: transfer[3],
-              amount: transfer[4],
-            };
-            
-            if (isFromUser) outbound.push(basic);
-            if (isToUser) inbound.push(basic);
-            return basic;
-          }
-
-          // Get token and delay information
-          const decodedId = await slowContract.read.decodeId([transfer[3]]);
-          const token = decodedId[0];
-          const delay = Number(decodedId[1]);
-
-          // Find token symbol from the crypto box elements
-          let symbol = "???";
-          const cryptoBoxes = document.querySelectorAll(".crypto-box");
-          for (const box of cryptoBoxes) {
-            if (box.dataset.token.toLowerCase() === token.toLowerCase()) {
-              symbol = box.dataset.symbol;
-              break;
+        ) {
+          totalCount
+          items {
+            amount
+            blockNumber
+            expiryTimestamp
+            fromAddress
+            id
+            status
+            timestamp
+            toAddress
+            tokenId
+            transactionHash
+            token {
+              address
+              decimals
+              delaySeconds
+              name
+              symbol
             }
           }
+        }
+      }
+    `;
 
-          // Format amount using token decimals
-          const decimals = await getTokenDecimals(token);
-          const formattedAmount = Number(transfer[4]) / (10 ** decimals);
+    // Execute query for inbound transfers
+    const inboundResponse = await fetch(INDEXER_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query: queryInbound
+      }),
+    });
 
-          const timestamp = Number(transfer[0]);
-          const unlockTime = timestamp + delay;
+    // Process outbound and inbound transfers
+    const outbound = [];
+    const inbound = [];
+    const unlockedIds = new Set(transfersCache.unlockedTransferIds);
+    
+    // Process outbound transfers (from user's data)
+    const transfers = userData.transfers.items;
+    const pendingOutboundTransfers = transfers.filter(transfer => 
+      transfer.status === 'PENDING'
+    );
 
+    // Process outbound transfers first
+    for (const transfer of pendingOutboundTransfers) {
+      // Skip if in our unlocked set
+      if (unlockedIds.has(transfer.id)) {
+        continue;
+      }
+      
+      // Create basic transfer object
+      const transferData = {
+        id: transfer.id,
+        from: transfer.fromAddress,
+        to: transfer.toAddress,
+        tokenId: transfer.tokenId,
+        amount: transfer.amount,
+      };
+
+      // Add detailed information if requested
+      if (isDetailed) {
+        const token = transfer.token;
+        const delay = token ? Number(token.delaySeconds) : 0;
+        const timestamp = Number(transfer.timestamp);
+        const unlockTime = Number(transfer.expiryTimestamp);
+
+        // Format amount using token decimals
+        const decimals = token ? Number(token.decimals) : 18;
+        const formattedAmount = Number(transfer.amount) / (10 ** decimals);
+
+        Object.assign(transferData, {
+          token: token ? token.address : null,
+          symbol: token ? token.symbol : "???",
+          amount: formattedAmount,
+          timestamp: timestamp,
+          delay: delay,
+          unlockTime: unlockTime,
+        });
+      }
+
+      outbound.push(transferData);
+    }
+    
+    // Process inbound transfers
+    if (inboundResponse.ok) {
+      const inboundData = await inboundResponse.json();
+      
+      if (inboundData.data && inboundData.data.transfers && inboundData.data.transfers.items) {
+        const inboundTransfers = inboundData.data.transfers.items;
+        
+        for (const transfer of inboundTransfers) {
+          // Skip if in our unlocked set
+          if (unlockedIds.has(transfer.id)) {
+            continue;
+          }
+          
+          // Create basic transfer object
           const transferData = {
-            id: transferId,
-            from: transfer[1],
-            to: transfer[2],
-            token,
-            symbol,
-            amount: formattedAmount,
-            timestamp: timestamp,
-            delay: delay,
-            unlockTime: unlockTime,
+            id: transfer.id,
+            from: transfer.fromAddress,
+            to: transfer.toAddress,
+            tokenId: transfer.tokenId,
+            amount: transfer.amount,
           };
 
-          // Add to appropriate arrays
-          if (isFromUser) {
-            outbound.push(transferData);
+          // Add detailed information if requested
+          if (isDetailed) {
+            const token = transfer.token;
+            const delay = token ? Number(token.delaySeconds) : 0;
+            const timestamp = Number(transfer.timestamp);
+            const unlockTime = Number(transfer.expiryTimestamp);
+
+            // Format amount using token decimals
+            const decimals = token ? Number(token.decimals) : 18;
+            const formattedAmount = Number(transfer.amount) / (10 ** decimals);
+
+            Object.assign(transferData, {
+              token: token ? token.address : null,
+              symbol: token ? token.symbol : "???",
+              amount: formattedAmount,
+              timestamp: timestamp,
+              delay: delay,
+              unlockTime: unlockTime,
+            });
           }
 
-          if (isToUser) {
-            inbound.push(transferData);
-          }
-
-          return transferData;
-        } catch (error) {
-          console.error("Error processing transfer:", error);
-          return null;
+          inbound.push(transferData);
         }
-      });
-
-      // Process this batch
-      await Promise.all(batchPromises);
+      }
     }
 
     // Sort transfers by unlock time (ascending)
@@ -276,7 +290,7 @@ export async function loadPendingTransfers({
       inbound,
       loading: false,
       lastUpdated: now,
-      unlockedTransferIds: transfersCache.unlockedTransferIds
+      unlockedTransferIds: unlockedIds
     };
 
     return {
@@ -287,7 +301,7 @@ export async function loadPendingTransfers({
   } catch (error) {
     console.error("Error loading pending transfers:", error);
     transfersCache.loading = false;
-    return { success: false, message: "Failed to load transfers" };
+    return { success: false, message: "Failed to load transfers: " + error.message };
   }
 }
 
@@ -414,6 +428,24 @@ export async function unlockTransfer({
 }
 
 /**
+ * Helper function to refresh the transfers cache
+ * @param {string} address - User address
+ */
+export async function refreshTransfersCache(address) {
+  if (!address) return;
+  
+  // Force a refresh next time loadPendingTransfers is called
+  transfersCache.lastUpdated = 0;
+  
+  // Optionally pre-load the data
+  try {
+    await loadPendingTransfers({ address });
+  } catch (error) {
+    console.error("Error pre-loading transfers:", error);
+  }
+}
+
+/**
  * Prepare multicall data for unlock and withdraw operations
  * @param {Object} params - Parameters
  * @returns {Promise<Array>} - Array of encoded function calls
@@ -506,6 +538,9 @@ export async function unlockAndWithdraw({
     
     // Add the transfer ID to our unlocked set
     transfersCache.unlockedTransferIds.add(transferId);
+    
+    // Refresh cache
+    refreshTransfersCache(userAddress);
     
     return { success: true, hash };
   } catch (error) {
@@ -607,6 +642,9 @@ export async function reverseAndWithdraw({
     
     // Add the transfer ID to our unlocked set
     transfersCache.unlockedTransferIds.add(transferId);
+    
+    // Refresh cache
+    refreshTransfersCache(userAddress);
     
     return { success: true, hash };
   } catch (error) {
