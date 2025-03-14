@@ -25,7 +25,8 @@ import {
   showLoading,
   hideLoading,
   formatCustomTimeInputs,
-  formatNumber
+  formatNumber,
+  debounce
 } from './services/utils';
 
 // Initialize application state
@@ -954,24 +955,31 @@ elements.applyCustomTime.addEventListener("click", function (event) {
 /**
  * Handle recipient input with ENS resolution
  */
-elements.recipientInput.addEventListener("input", async function () {
-  const input = this.value.trim();
-  appState.currentState.recipient = input;
-
+// Create a debounced ENS resolver function
+const debouncedENSResolver = debounce(async (input) => {
   if (input.length > 0) {
-    if (this.ensTimeout) {
-      clearTimeout(this.ensTimeout);
-    }
-
-    this.ensTimeout = setTimeout(async () => {
-      const result = await resolveAddressOrENS(input);
-      uiController.updateAfterENSResolution(result, input);
-    }, 500);
+    const result = await resolveAddressOrENS(input);
+    uiController.updateAfterENSResolution(result, input);
   } else {
     elements.ensStatus.textContent = "";
     elements.ensStatus.className = "ens-status";
     appState.currentState.resolvedAddress = null;
   }
+}, 500);
+
+elements.recipientInput.addEventListener("input", function () {
+  const input = this.value.trim();
+  appState.currentState.recipient = input;
+
+  if (input.length === 0) {
+    elements.ensStatus.textContent = "";
+    elements.ensStatus.className = "ens-status";
+    appState.currentState.resolvedAddress = null;
+    return;
+  }
+
+  // Use the debounced function for better performance
+  debouncedENSResolver(input);
 });
 
 /**
@@ -1104,9 +1112,10 @@ function init() {
 
         // Set up interval for progress bar updates if not already running
         if (!appState.timeoutIds.progressBarUpdate) {
+          // Use a more efficient update interval (10 seconds instead of 5)
           appState.timeoutIds.progressBarUpdate = setInterval(
             () => uiController.updateProgressBars(),
-            5000
+            10000
           );
         }
       }

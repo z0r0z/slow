@@ -85,28 +85,30 @@ export function formatNumber(value) {
 export function formatTimeDiff(seconds) {
   if (seconds <= 0) return "0 seconds";
 
+  // Optimize by avoiding calculations for large time periods
+  // For very short periods (< 1 minute) just show seconds
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  
+  // For periods < 1 hour, show minutes and seconds
+  if (seconds < 3600) {
+    const minutes = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return secs > 0 ? `${minutes}m ${secs}s` : `${minutes}m`;
+  }
+  
+  // For periods < 1 day, show hours and minutes
+  if (seconds < 86400) {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+  
+  // For larger periods, show days and hours
   const days = Math.floor(seconds / 86400);
-  const remainingSeconds = seconds % 86400;
-  const hours = Math.floor(remainingSeconds / 3600);
-  const remainingSecondsAfterHours = remainingSeconds % 3600;
-  const minutes = Math.floor(remainingSecondsAfterHours / 60);
-  const finalSeconds = remainingSecondsAfterHours % 60;
-
-  let result = "";
-  if (days > 0) {
-    result += `${days}d `;
-  }
-  if (hours > 0 || days > 0) {
-    result += `${hours}h `;
-  }
-  if (minutes > 0 || hours > 0 || days > 0) {
-    result += `${minutes}m `;
-  }
-  if (finalSeconds > 0 && days === 0 && hours === 0) {
-    result += `${finalSeconds}s`;
-  }
-
-  return result.trim();
+  const hours = Math.floor((seconds % 86400) / 3600);
+  return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
 }
 
 /**
@@ -147,4 +149,22 @@ export function hideLoading(loadingElement) {
   if (!loadingElement) return;
   
   loadingElement.style.display = "none";
+}
+
+/**
+ * Debounce function to improve performance of frequently called events
+ * @param {Function} func - Function to debounce
+ * @param {number} wait - Wait time in milliseconds
+ * @returns {Function} - Debounced function
+ */
+export function debounce(func, wait = 300) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
 }

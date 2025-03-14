@@ -202,7 +202,7 @@ export async function lookupENSName(address) {
 
   // Check cache first
   const cacheKey = address.toLowerCase();
-  if (ensCache[cacheKey]) {
+  if (ensCache[cacheKey] !== undefined) {
     return ensCache[cacheKey];
   }
 
@@ -215,9 +215,8 @@ export async function lookupENSName(address) {
       args: [address]
     });
 
-    if (name) {
-      ensCache[cacheKey] = name;
-    }
+    // Cache the result (even if null)
+    ensCache[cacheKey] = name || null;
 
     return name || null;
   } catch (error) {
@@ -235,13 +234,12 @@ export async function lookupENSAddress(name) {
   if (!name || !name.includes(".")) return null;
 
   const cacheKey = name.toLowerCase();
-  if (ensCache[cacheKey]) {
+  if (ensCache[cacheKey] !== undefined) {
     return ensCache[cacheKey];
   }
 
   try {
     // Use readContract directly with the mainnetClient
-    console.log("ENS Try", name)
     const result = await mainnetClient.readContract({
       address: CTC_CONTRACT_ADDRESS,
       abi: CTCAbi,
@@ -249,14 +247,11 @@ export async function lookupENSAddress(name) {
       args: [name]
     });
 
-    console.log("ENS Result", result)
-
-    if (result && result[0]) {
-      ensCache[cacheKey] = result[0];
-      return result[0];
-    }
-
-    return null;
+    const address = result && result[0] ? result[0] : null;
+    // Cache the result (even if null)
+    ensCache[cacheKey] = address;
+    
+    return address;
   } catch (error) {
     console.error("Error looking up ENS address:", error);
     return null;
@@ -298,7 +293,7 @@ export function getTokenContract(tokenAddress) {
  */
 export async function getTokenDecimals(tokenAddress) {
   // Check cache first
-  if (tokenDecimalsCache[tokenAddress]) {
+  if (tokenDecimalsCache[tokenAddress] !== undefined) {
     return tokenDecimalsCache[tokenAddress];
   }
 
@@ -306,6 +301,14 @@ export async function getTokenDecimals(tokenAddress) {
   if (tokenAddress === "0x0000000000000000000000000000000000000000") {
     tokenDecimalsCache[tokenAddress] = 18;
     return 18;
+  }
+  
+  // Add common Base network tokens to cache if not yet initialized
+  if (Object.keys(tokenDecimalsCache).length === 0) {
+    // Cache common token decimals to avoid repeated contract calls
+    tokenDecimalsCache["0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"] = 6; // USDC on Base
+    tokenDecimalsCache["0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb"] = 18; // DAI on Base
+    tokenDecimalsCache["0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2"] = 6; // USDT on Base
   }
 
   try {
@@ -334,8 +337,10 @@ export async function getTokenDecimals(tokenAddress) {
 export function isValidAddress(address) {
   if (!address || typeof address !== 'string') return false;
   
-  // Simple regex check for Ethereum address format
-  return /^0x[a-fA-F0-9]{40}$/.test(address);
+  // Faster check: verify length first, then check hex pattern
+  return address.length === 42 && 
+         address.startsWith('0x') && 
+         /^0x[a-fA-F0-9]{40}$/.test(address);
 }
 
 /**
