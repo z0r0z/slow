@@ -136,8 +136,8 @@ async function handleConnectWallet() {
     
     showToast(elements.toast, "Wallet connected successfully!", 3000);
     
-    // Load pending transfers
-    await handleLoadPendingTransfers();
+    // Load pending transfers with forceRefresh to avoid "Already loading transfers" error
+    await handleLoadPendingTransfers(true);
     
     hideLoading(elements.loadingIndicator);
     return true;
@@ -258,8 +258,9 @@ async function resolveAddressOrENS(input) {
 
 /**
  * Load pending transfers
+ * @param {boolean} forceRefresh - Force refresh even if already loading
  */
-async function handleLoadPendingTransfers() {
+async function handleLoadPendingTransfers(forceRefresh = false) {
   if (!appState.wallet.connected) {
     showToast(elements.toast, "Please connect your wallet first", 3000);
     return;
@@ -279,7 +280,8 @@ async function handleLoadPendingTransfers() {
     const result = await loadPendingTransfers({
       address: appState.wallet.address,
       publicClient: appState.wallet.publicClient,
-      isDetailed: true
+      isDetailed: true,
+      forceRefresh: forceRefresh
     });
     
     if (result.success) {
@@ -1095,7 +1097,7 @@ function init() {
     ) {
       // Only reload transfers if it's been a while since the last update
       if (Date.now() - appState.pendingTransfers.lastUpdated > 60000) {
-        handleLoadPendingTransfers();
+        handleLoadPendingTransfers(true); // Force refresh to avoid "Already loading" state
       } else {
         // Just update the progress bars
         uiController.updateProgressBars();

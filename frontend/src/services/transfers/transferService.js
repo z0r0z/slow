@@ -54,17 +54,23 @@ export async function loadPendingTransfers({
   address,
   publicClient,
   slowContract = getSlowContract(),
-  isDetailed = true
+  isDetailed = true,
+  forceRefresh = false
 }) {
   if (!address) {
     return { success: false, message: "Address is required" };
   }
 
-  if (transfersCache.loading) {
+  if (transfersCache.loading && !forceRefresh) {
     return { success: false, message: "Already loading transfers" };
   }
 
   try {
+    // Reset loading state if forcing refresh
+    if (forceRefresh) {
+      transfersCache.loading = false;
+    }
+    
     // Set loading state
     transfersCache.loading = true;
 
@@ -333,10 +339,11 @@ export async function refreshTransfersCache(address) {
   
   // Force a refresh next time loadPendingTransfers is called
   transfersCache.lastUpdated = 0;
+  transfersCache.loading = false;
   
   // Optionally pre-load the data
   try {
-    await loadPendingTransfers({ address });
+    await loadPendingTransfers({ address, forceRefresh: true });
   } catch (error) {
     console.error("Error pre-loading transfers:", error);
   }
