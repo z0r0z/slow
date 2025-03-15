@@ -22,6 +22,8 @@ let slowContract = null;
 // Cache for token decimals and ENS names
 const tokenDecimalsCache = {};
 const ensCache = {};
+// Cache expiration time in milliseconds (24 hours)
+const ENS_CACHE_EXPIRY = 24 * 60 * 60 * 1000;
 
 /**
  * Connect to wallet using web3-onboard
@@ -67,14 +69,22 @@ export async function connectWallet() {
       }
       
       // Initialize the SLOW contract with viem
-      slowContract = getContract({
-        address: SLOW_CONTRACT_ADDRESS,
-        abi: SlowAbi,
-        client: { 
-          public: basePublicClient,
-          wallet: walletClient
-        }
-      });
+      try {
+        slowContract = getContract({
+          address: SLOW_CONTRACT_ADDRESS,
+          abi: SlowAbi,
+          client: { 
+            public: basePublicClient,
+            wallet: walletClient
+          }
+        });
+        
+        // Verify contract is working properly
+        await slowContract.read.owner();
+      } catch (error) {
+        console.error("Error initializing SLOW contract:", error);
+        // Don't fail the connection, but log the error
+      }
           
       // Get ENS name if available
       const ensName = await lookupENSName(account);
@@ -139,19 +149,36 @@ export async function connectWallet() {
     
     if (chainId !== base.id) {
       console.log("Wrong network, requesting chain switch to Base");
-      await onboard.setChain({ chainId: 8453 }); // Base chainId
-      return { success: false, message: "Please switch to Base network" };
+      try {
+        await onboard.setChain({ chainId: 8453 }); // Base chainId
+        // Verify the chain switch was successful
+        const newChainId = await basePublicClient.getChainId();
+        if (newChainId !== base.id) {
+          return { success: false, message: "Please switch to Base network" };
+        }
+      } catch (error) {
+        console.error("Error switching chain:", error);
+        return { success: false, message: "Failed to switch to Base network" };
+      }
     }
     
     // Initialize the SLOW contract with viem
-    slowContract = getContract({
-      address: SLOW_CONTRACT_ADDRESS,
-      abi: SlowAbi,
-      client: {
-        public: basePublicClient,
-        wallet: walletClient
-      }
-    });
+    try {
+      slowContract = getContract({
+        address: SLOW_CONTRACT_ADDRESS,
+        abi: SlowAbi,
+        client: {
+          public: basePublicClient,
+          wallet: walletClient
+        }
+      });
+      
+      // Verify contract is working properly
+      await slowContract.read.owner();
+    } catch (error) {
+      console.error("Error initializing SLOW contract:", error);
+      // Don't fail the connection, but log the error
+    }
         
     // Get ENS name if available
     const ensName = await lookupENSName(account);
@@ -203,7 +230,21 @@ export async function lookupENSName(address) {
   // Check cache first
   const cacheKey = address.toLowerCase();
   if (ensCache[cacheKey] !== undefined) {
-    return ensCache[cacheKey];
+    const cachedEntry = ensCache[cacheKey];
+    // Check if it's a cached object with timestamp, and if it's still valid
+    if (typeof cachedEntry === 'object' && cachedEntry.timestamp) {
+      if (Date.now() - cachedEntry.timestamp < ENS_CACHE_EXPIRY) {
+        return cachedEntry.value;
+      }
+      // Otherwise cache has expired, we'll refresh it
+    } else {
+      // Legacy cache format - upgrade to new format with current timestamp
+      ensCache[cacheKey] = {
+        value: cachedEntry,
+        timestamp: Date.now()
+      };
+      return cachedEntry;
+    }
   }
 
   try {
@@ -215,8 +256,11 @@ export async function lookupENSName(address) {
       args: [address]
     });
 
-    // Cache the result (even if null)
-    ensCache[cacheKey] = name || null;
+    // Cache the result with timestamp (even if null)
+    ensCache[cacheKey] = {
+      value: name || null,
+      timestamp: Date.now()
+    };
 
     return name || null;
   } catch (error) {
@@ -235,7 +279,21 @@ export async function lookupENSAddress(name) {
 
   const cacheKey = name.toLowerCase();
   if (ensCache[cacheKey] !== undefined) {
-    return ensCache[cacheKey];
+    const cachedEntry = ensCache[cacheKey];
+    // Check if it's a cached object with timestamp, and if it's still valid
+    if (typeof cachedEntry === 'object' && cachedEntry.timestamp) {
+      if (Date.now() - cachedEntry.timestamp < ENS_CACHE_EXPIRY) {
+        return cachedEntry.value;
+      }
+      // Otherwise cache has expired, we'll refresh it
+    } else {
+      // Legacy cache format - upgrade to new format with current timestamp
+      ensCache[cacheKey] = {
+        value: cachedEntry,
+        timestamp: Date.now()
+      };
+      return cachedEntry;
+    }
   }
 
   try {
@@ -248,8 +306,19 @@ export async function lookupENSAddress(name) {
     });
 
     const address = result && result[0] ? result[0] : null;
-    // Cache the result (even if null)
-    ensCache[cacheKey] = address;
+    // Cache the result with timestamp (even if null)
+    ensCache[cacheKey] = {
+      value: address,
+      timestamp: Date.now()
+    };
+    
+    // Also cache the reverse lookup
+    if (address) {
+      ensCache[address.toLowerCase()] = {
+        value: name,
+        timestamp: Date.now()
+      };
+    }
     
     return address;
   } catch (error) {
@@ -263,6 +332,33 @@ export async function lookupENSAddress(name) {
  * @returns {Object} Contract instance
  */
 export function getSlowContract() {
+  if (!slowContract) {
+    console.warn("SLOW contract not initialized, attempting to get fresh instance");
+    
+    // Check if wallet client is available
+    if (walletClient && basePublicClient) {
+      console.warn("Wallet client available, creating fresh contract instance");
+      
+      try {
+        // Create a fresh contract instance
+        slowContract = getContract({
+          address: SLOW_CONTRACT_ADDRESS,
+          abi: SlowAbi,
+          client: {
+            public: basePublicClient,
+            wallet: walletClient
+          }
+        });
+        
+        console.warn("Fresh contract instance created:", !!slowContract);
+      } catch (error) {
+        console.error("Error creating fresh contract instance:", error);
+      }
+    } else {
+      console.warn("Wallet not connected, contract cannot be initialized");
+    }
+  }
+  
   return slowContract;
 }
 
@@ -412,15 +508,38 @@ export async function approveToken(tokenAddress) {
 }
 
 /**
+ * Wait for a transaction to be confirmed
+ * @param {string} hash - Transaction hash
+ * @returns {Promise<boolean>} - True if transaction confirmed
+ */
+export async function waitForTransaction(hash) {
+  if (!hash || !basePublicClient) return false;
+  
+  try {
+    const receipt = await basePublicClient.waitForTransactionReceipt({
+      hash,
+      confirmations: 1,
+      timeout: 60000 // 60 seconds timeout
+    });
+    
+    return receipt.status === 1; // 1 = success, 0 = failed
+  } catch (error) {
+    console.error("Error waiting for transaction:", error);
+    return false;
+  }
+}
+
+/**
  * Deposit funds to the SLOW contract
  * @param {Object} params - Deposit parameters
- * @returns {Promise<{success: boolean, hash?: string}>} - Result of the deposit
+ * @returns {Promise<{success: boolean, hash?: string, confirmed?: boolean}>} - Result of the deposit
  */
 export async function depositFunds({
   tokenAddress,
   recipient,
   amount,
-  delay
+  delay,
+  waitForConfirmation = false
 }) {
   try {
     if (!slowContract || !walletClient) {
@@ -462,6 +581,12 @@ export async function depositFunds({
     }
 
     const hash = await slowContract.write.depositTo(txParams);
+    
+    // If we need to wait for confirmation, do it now
+    if (waitForConfirmation) {
+      const confirmed = await waitForTransaction(hash);
+      return { success: true, hash, confirmed };
+    }
     
     return { success: true, hash };
   } catch (error) {

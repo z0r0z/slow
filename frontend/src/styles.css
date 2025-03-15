@@ -461,42 +461,236 @@ body.inverted .modal-button:hover {
     position: absolute;
     z-index: 5;
 }
-.take-line {
-    height: 20px;
+
+.transfer-section {
+    margin-bottom: 50px;
     width: 100%;
-    transition: var(--transition);
+}
+
+.transfer-section-title {
+    font-size: 18px;
+    font-weight: bold;
+    margin-bottom: 15px;
+    opacity: 0.9;
+    letter-spacing: 0.5px;
+}
+
+.transfer-track {
     position: relative;
+    height: 4px;
+    width: 100%;
+    background-color: var(--white);
+    margin: 50px 0;
+    border-radius: 2px;
+    overflow: visible;
+    box-shadow: 0 0 4px rgba(255, 255, 255, 0.2);
+}
+
+body.inverted .transfer-track {
+    background-color: var(--black);
+    box-shadow: 0 0 4px rgba(0, 0, 0, 0.2);
+}
+
+.transfer-direction-arrows {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    top: 0;
+    left: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+@keyframes flowRight {
+    0% { transform: translateX(-20%); }
+    100% { transform: translateX(0%); }
+}
+
+@keyframes flowLeft {
+    0% { transform: translateX(0%); }
+    100% { transform: translateX(-20%); }
+}
+
+.arrow-flow {
+    position: absolute;
+    width: 200%;
+    height: 100%;
+    top: 0;
+    left: 0;
+    font-size: 10px;
+    letter-spacing: 2px;
     display: flex;
     align-items: center;
-    border-radius: 10px;
-    overflow: hidden;
-}
-.transfer-tooltip {
-    position: absolute;
-    background-color: rgba(0, 0, 0, 0.85);
-    color: var(--white);
-    padding: 10px 15px;
-    border-radius: 6px;
-    font-size: 12px;
-    pointer-events: none;
-    z-index: 15;
-    transition: opacity 0.2s ease;
-    opacity: 0;
     white-space: nowrap;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-    border: 1px solid var(--light-gray);
-    transform: translateY(-100%);
-    top: -10px;
-    max-width: 300px;
+    color: var(--black);
+    opacity: 0.7;
+    font-weight: normal;
+    z-index: 2;
+    text-shadow: 0px 0px 1px rgba(0, 0, 0, 0.1);
 }
-.progress-arrow:hover .transfer-tooltip {
+
+.outbound-track .arrow-flow {
+    animation: flowRight 6s infinite linear;
+}
+
+.inbound-track .arrow-flow {
+    animation: flowLeft 6s infinite linear;
+}
+
+body.inverted .arrow-flow {
+    color: var(--white);
+}
+
+.token-icon {
+    width: 36px;
+    height: 36px;
+    border-radius: 18px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 12px;
+    font-weight: bold;
+    position: absolute;
+    transform: translate(-50%, -50%);
+    z-index: 8;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+    color: white;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    will-change: transform;
+    /* Add blinking animation to make it more visible */
+    animation: pulse 1.5s infinite alternate;
+    /* Make sure it's clickable */
+    pointer-events: auto;
+}
+
+.token-icon:hover {
+    transform: translate(-50%, -50%) scale(1.2);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.token-icon:hover .transfer-tooltip {
+    visibility: visible;
     opacity: 1;
 }
+
+.token-icon.completed {
+    border: 2px solid gold;
+    box-shadow: 0 0 12px rgba(255, 215, 0, 0.8);
+    transform: translate(-50%, -50%) scale(1.1);
+    animation: pulse 2s infinite alternate;
+}
+
+.token-icon.completed:hover {
+    transform: translate(-50%, -50%) scale(1.3);
+    box-shadow: 0 0 16px rgba(255, 215, 0, 0.9);
+    animation: none;
+}
+
+@keyframes pulse {
+    0% { box-shadow: 0 0 5px rgba(255, 215, 0, 0.8); }
+    100% { box-shadow: 0 0 12px rgba(255, 215, 0, 0.8); }
+}
+
+/* Position inbound icons below the track */
+.inbound-track .token-icon {
+    top: 100%;
+}
+
+/* Position outbound icons above the track */
+.outbound-track .token-icon {
+    top: 0%;
+}
+
+.token-icon-eth {
+    background-color: transparent;
+    background-image: url('data:image/svg+xml;utf8,<svg width="100%" height="100%" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle r="20" cx="20" cy="20" fill="%233C3C3D" /><g transform="translate(20, 20) scale(0.35)"><path d="M 0,-30 L 17,0 L 0,10 L -17,0 Z" fill="%239EA3D0" /><path d="M 0,10 L 17,0 L 0,30 L -17,0 Z" fill="%239EA3D0" opacity="0.8" /></g></svg>');
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 100%;
+    font-size: 0; /* Hide any text */
+}
+
+.token-icon-usdc {
+    background-color: transparent;
+    background-image: url('data:image/svg+xml;utf8,<svg width="100%" height="100%" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle r="20" cx="20" cy="20" fill="%232775CA" opacity="0.3" /><text x="20" y="25" style="font-family: Arial; font-size: 14px; font-weight: bold; text-anchor: middle; fill: white;">$</text></svg>');
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 100%;
+    font-size: 0; /* Hide any text */
+}
+
+.token-icon-usdt {
+    background-color: transparent;
+    background-image: url('data:image/svg+xml;utf8,<svg width="100%" height="100%" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle r="20" cx="20" cy="20" fill="%2326A17B" opacity="0.3" /><text x="20" y="25" style="font-family: Arial; font-size: 14px; font-weight: bold; text-anchor: middle; fill: white;">T</text></svg>');
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 100%;
+    font-size: 0; /* Hide any text */
+}
+
+.token-icon-dai {
+    background-color: transparent;
+    background-image: url('data:image/svg+xml;utf8,<svg width="100%" height="100%" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg"><circle r="20" cx="20" cy="20" fill="%23653720" /><text x="20" y="25" style="font-family: Arial; font-size: 16px; font-weight: bold; text-anchor: middle; fill: %23F5AC37;">Đ</text></svg>');
+    background-repeat: no-repeat;
+    background-position: center;
+    background-size: 100%;
+    font-size: 0; /* Hide any text */
+}
+.progress-indicator {
+    position: absolute;
+    height: 100%;
+    top: 0;
+    left: 0;
+    transition: width 0.5s ease;
+    z-index: 1;
+}
+
+.outbound-track .progress-indicator {
+    background-color: rgba(255, 255, 255, 0.25);
+    box-shadow: 0 0 4px rgba(255, 255, 255, 0.3);
+    border-radius: 1.5px;
+}
+
+.inbound-track .progress-indicator {
+    background-color: rgba(255, 255, 255, 0.25);
+    box-shadow: 0 0 4px rgba(255, 255, 255, 0.3);
+    border-radius: 1.5px;
+}
+
+body.inverted .outbound-track .progress-indicator,
+body.inverted .inbound-track .progress-indicator {
+    background-color: rgba(0, 0, 0, 0.25);
+    box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
+}
+
+.transfer-tooltip {
+    position: absolute;
+    visibility: hidden;
+    background-color: rgba(0, 0, 0, 0.92);
+    color: var(--white);
+    padding: 12px 15px;
+    border-radius: 8px;
+    width: 230px;
+    font-size: 12px;
+    pointer-events: none;
+    z-index: 100;
+    transition: opacity 0.2s ease, visibility 0.2s, transform 0.2s ease;
+    opacity: 0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    border: 1px solid var(--light-gray);
+    transform: translateY(0);
+}
+
+.token-icon:hover .transfer-tooltip {
+    transform: translateY(-5px);
+}
+
 body.inverted .transfer-tooltip {
-    background-color: rgba(255, 255, 255, 0.85);
+    background-color: rgba(255, 255, 255, 0.98);
     color: var(--black);
     border-color: #ccc;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 .progress-bar {
     position: absolute;
@@ -550,6 +744,38 @@ body.inverted .transfer-tooltip {
 }
 body.inverted .tooltip-label {
     color: #555;
+}
+
+.tooltip-status-complete {
+    background-color: rgba(76, 175, 80, 0.15);
+    color: #4CAF50;
+    padding: 4px 8px;
+    text-align: center;
+    font-weight: bold;
+    font-size: 12px;
+    border-radius: 4px;
+    border: 1px solid rgba(76, 175, 80, 0.3);
+}
+
+.tooltip-status-pending {
+    background-color: rgba(255, 193, 7, 0.15);
+    color: #FFC107;
+    padding: 4px 8px;
+    text-align: center;
+    font-weight: bold;
+    font-size: 12px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 193, 7, 0.3);
+}
+
+body.inverted .tooltip-status-complete {
+    background-color: rgba(76, 175, 80, 0.1);
+    border: 1px solid rgba(76, 175, 80, 0.2);
+}
+
+body.inverted .tooltip-status-pending {
+    background-color: rgba(255, 193, 7, 0.1);
+    border: 1px solid rgba(255, 193, 7, 0.2);
 }
 .take-line-eth {
     background-color: var(--eth-color);
