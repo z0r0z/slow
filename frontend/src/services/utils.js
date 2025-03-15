@@ -85,28 +85,35 @@ export function formatNumber(value) {
 export function formatTimeDiff(seconds) {
   if (seconds <= 0) return "0 seconds";
 
-  const days = Math.floor(seconds / 86400);
-  const remainingSeconds = seconds % 86400;
-  const hours = Math.floor(remainingSeconds / 3600);
-  const remainingSecondsAfterHours = remainingSeconds % 3600;
-  const minutes = Math.floor(remainingSecondsAfterHours / 60);
-  const finalSeconds = remainingSecondsAfterHours % 60;
-
-  let result = "";
-  if (days > 0) {
-    result += `${days}d `;
+  // Use a more efficient implementation with lookup constants
+  const minute = 60;
+  const hour = minute * 60;
+  const day = hour * 24;
+  
+  // Optimize by avoiding calculations for large time periods
+  // For very short periods (< 1 minute) just show seconds
+  if (seconds < minute) {
+    return `${seconds}s`;
   }
-  if (hours > 0 || days > 0) {
-    result += `${hours}h `;
+  
+  // For periods < 1 hour, show minutes and seconds
+  if (seconds < hour) {
+    const minutes = Math.floor(seconds / minute);
+    const secs = seconds % minute;
+    return secs > 0 ? `${minutes}m ${secs}s` : `${minutes}m`;
   }
-  if (minutes > 0 || hours > 0 || days > 0) {
-    result += `${minutes}m `;
+  
+  // For periods < 1 day, show hours and minutes
+  if (seconds < day) {
+    const hours = Math.floor(seconds / hour);
+    const minutes = Math.floor((seconds % hour) / minute);
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
   }
-  if (finalSeconds > 0 && days === 0 && hours === 0) {
-    result += `${finalSeconds}s`;
-  }
-
-  return result.trim();
+  
+  // For larger periods, show days and hours
+  const days = Math.floor(seconds / day);
+  const hours = Math.floor((seconds % day) / hour);
+  return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
 }
 
 /**
@@ -147,4 +154,30 @@ export function hideLoading(loadingElement) {
   if (!loadingElement) return;
   
   loadingElement.style.display = "none";
+}
+
+/**
+ * Debounce function to improve performance of frequently called events
+ * @param {Function} func - Function to debounce
+ * @param {number} wait - Wait time in milliseconds
+ * @param {boolean} immediate - Whether to call the function immediately
+ * @returns {Function} - Debounced function
+ */
+export function debounce(func, wait = 300, immediate = false) {
+  let timeout;
+  return function executedFunction(...args) {
+    const context = this;
+    
+    const later = () => {
+      timeout = null;
+      if (!immediate) func.apply(context, args);
+    };
+    
+    const callNow = immediate && !timeout;
+    
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+    
+    if (callNow) func.apply(context, args);
+  };
 }

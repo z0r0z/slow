@@ -12,7 +12,9 @@ let transfersCache = {
   inbound: [],
   lastUpdated: 0,
   loading: false,
-  unlockedTransferIds: new Set()
+  unlockedTransferIds: new Set(),
+  // Cache frequently accessed transfers data
+  transfersById: new Map()
 };
 
 /**
@@ -54,17 +56,23 @@ export async function loadPendingTransfers({
   address,
   publicClient,
   slowContract = getSlowContract(),
-  isDetailed = true
+  isDetailed = true,
+  forceRefresh = false
 }) {
   if (!address) {
     return { success: false, message: "Address is required" };
   }
 
-  if (transfersCache.loading) {
+  if (transfersCache.loading && !forceRefresh) {
     return { success: false, message: "Already loading transfers" };
   }
 
   try {
+    // Reset loading state if forcing refresh
+    if (forceRefresh) {
+      transfersCache.loading = false;
+    }
+    
     // Set loading state
     transfersCache.loading = true;
 
@@ -102,44 +110,10 @@ export async function loadPendingTransfers({
         continue;
       }
       
-      // Create basic transfer object
-      const transferData = {
-        id: transfer.id,
-        from: transfer.fromAddress,
-        to: transfer.toAddress,
-        tokenId: transfer.token?.id || null,
-        amount: transfer.amount,
-      };
-
-      // Add detailed information if requested
-      if (isDetailed) {
-        const token = transfer.token;
-        const delay = token ? Number(token.delaySeconds) : 0;
-        // Calculate timestamp from expiryTimestamp - delay
-        const unlockTime = Number(transfer.expiryTimestamp);
-        const timestamp = unlockTime - delay;
-
-        // Format amount using token decimals
-        const decimals = token ? Number(token.decimals) : 18;
-        const formattedAmount = Number(transfer.amount) / (10 ** decimals);
-
-        Object.assign(transferData, {
-          token: token ? token.address : null,
-          symbol: token ? token.symbol : "???",
-          amount: formattedAmount,
-          timestamp: timestamp,
-          delay: delay,
-          unlockTime: unlockTime,
-        });
-      }
-
-      outbound.push(transferData);
-    }
-    
-    // Process inbound transfers
-    for (const transfer of inboundTransfers) {
-      // Skip if in our unlocked set
-      if (unlockedIds.has(transfer.id)) {
+      // Check if we already have the transfer details in cache
+      const cachedTransfer = transfersCache.transfersById.get(transfer.id);
+      if (cachedTransfer && !forceRefresh) {
+        outbound.push(cachedTransfer);
         continue;
       }
       
@@ -174,7 +148,59 @@ export async function loadPendingTransfers({
         });
       }
 
+      // Add to both the regular array and the map cache
+      outbound.push(transferData);
+      transfersCache.transfersById.set(transfer.id, transferData);
+    }
+    
+    // Process inbound transfers
+    for (const transfer of inboundTransfers) {
+      // Skip if in our unlocked set
+      if (unlockedIds.has(transfer.id)) {
+        continue;
+      }
+      
+      // Check if we already have the transfer details in cache
+      const cachedTransfer = transfersCache.transfersById.get(transfer.id);
+      if (cachedTransfer && !forceRefresh) {
+        inbound.push(cachedTransfer);
+        continue;
+      }
+      
+      // Create basic transfer object
+      const transferData = {
+        id: transfer.id,
+        from: transfer.fromAddress,
+        to: transfer.toAddress,
+        tokenId: transfer.token?.id || null,
+        amount: transfer.amount,
+      };
+
+      // Add detailed information if requested
+      if (isDetailed) {
+        const token = transfer.token;
+        const delay = token ? Number(token.delaySeconds) : 0;
+        // Calculate timestamp from expiryTimestamp - delay
+        const unlockTime = Number(transfer.expiryTimestamp);
+        const timestamp = unlockTime - delay;
+
+        // Format amount using token decimals
+        const decimals = token ? Number(token.decimals) : 18;
+        const formattedAmount = Number(transfer.amount) / (10 ** decimals);
+
+        Object.assign(transferData, {
+          token: token ? token.address : null,
+          symbol: token ? token.symbol : "???",
+          amount: formattedAmount,
+          timestamp: timestamp,
+          delay: delay,
+          unlockTime: unlockTime,
+        });
+      }
+
+      // Add to both the regular array and the map cache
       inbound.push(transferData);
+      transfersCache.transfersById.set(transfer.id, transferData);
     }
 
     // Sort transfers by unlock time (ascending)
@@ -187,7 +213,8 @@ export async function loadPendingTransfers({
       inbound,
       loading: false,
       lastUpdated: now,
-      unlockedTransferIds: unlockedIds
+      unlockedTransferIds: unlockedIds,
+      transfersById: transfersCache.transfersById
     };
 
     return {
@@ -267,6 +294,8 @@ export async function reverseTransfer({
     
     // Add the transfer ID to our unlocked set
     transfersCache.unlockedTransferIds.add(transferId);
+    // Remove from transfers by ID cache
+    transfersCache.transfersById.delete(transferId);
     
     return { success: true, hash };
   } catch (error) {
@@ -316,6 +345,8 @@ export async function unlockTransfer({
     
     // Add the transfer ID to our unlocked set
     transfersCache.unlockedTransferIds.add(transferId);
+    // Remove from transfers by ID cache
+    transfersCache.transfersById.delete(transferId);
     
     return { success: true, hash };
   } catch (error) {
@@ -327,19 +358,66 @@ export async function unlockTransfer({
 /**
  * Helper function to refresh the transfers cache
  * @param {string} address - User address
+ * @param {boolean} immediate - Whether to load immediately
+ * @returns {Promise<boolean>} - Success status
  */
-export async function refreshTransfersCache(address) {
-  if (!address) return;
+export async function refreshTransfersCache(address, immediate = true) {
+  if (!address) return false;
   
   // Force a refresh next time loadPendingTransfers is called
   transfersCache.lastUpdated = 0;
+  transfersCache.loading = false;
   
-  // Optionally pre-load the data
-  try {
-    await loadPendingTransfers({ address });
-  } catch (error) {
-    console.error("Error pre-loading transfers:", error);
+  // Optionally pre-load the data immediately
+  if (immediate) {
+    try {
+      const result = await loadPendingTransfers({ address, forceRefresh: true });
+      return result.success;
+    } catch (error) {
+      console.error("Error pre-loading transfers:", error);
+      return false;
+    }
   }
+  
+  return true;
+}
+
+/**
+ * Set up automatic refresh after a transaction
+ * @param {string} txHash - Transaction hash
+ * @param {string} address - User address 
+ * @param {number} attempts - Number of attempts
+ * @returns {Promise<void>}
+ */
+export async function setupTransferRefreshAfterTx(txHash, address, attempts = 5) {
+  if (!txHash || !address) return;
+  
+  // Create a polling mechanism to check for transfer updates
+  let attempt = 0;
+  
+  // Set up polling interval to check for new transfers
+  const pollInterval = setInterval(async () => {
+    attempt++;
+    
+    try {
+      // Force refresh with indexer
+      await refreshTransfersCache(address, true);
+      
+      // If we've made enough attempts or loaded transfers, stop polling
+      if (attempt >= attempts) {
+        clearInterval(pollInterval);
+      }
+    } catch (error) {
+      console.error("Error polling for transfer updates:", error);
+      // On error, also stop polling
+      clearInterval(pollInterval);
+    }
+  }, 4000); // Check every 4 seconds
+  
+  // Also stop polling after a max time (30s) regardless of success
+  setTimeout(() => {
+    clearInterval(pollInterval);
+  }, 30000);
 }
 
 /**
@@ -431,18 +509,69 @@ export async function unlockAndWithdraw({
       slowContract
     });
 
-    const hash = await slowContract.write.multicall([calldata]);
-    
-    // Add the transfer ID to our unlocked set
-    transfersCache.unlockedTransferIds.add(transferId);
-    
-    // Refresh cache
-    refreshTransfersCache(userAddress);
-    
-    return { success: true, hash };
+    // The multicall function expects an array of encoded function calls
+    // Try the direct approach first (passing calldata directly)
+    try {
+      console.log("Executing unlock multicall...");
+      const hash = await slowContract.write.multicall(calldata, {
+        account: userAddress,
+        gas: 600000n // Higher gas to be safe
+      });
+      
+      // Add the transfer ID to our unlocked set
+      transfersCache.unlockedTransferIds.add(transferId);
+      // Remove from transfers by ID cache
+      transfersCache.transfersById.delete(transferId);
+      
+      // Refresh cache
+      refreshTransfersCache(userAddress);
+      
+      return { success: true, hash };
+    } catch (primaryError) {
+      console.error("First multicall attempt failed:", primaryError);
+      
+      // If first approach fails, try alternative format (wrapping in an array)
+      try {
+        console.log("Trying alternative multicall format with [calldata]");
+        const hash = await slowContract.write.multicall([calldata], {
+          account: userAddress,
+          gas: 600000n // Higher gas to be safe
+        });
+        
+        // Add the transfer ID to our unlocked set
+        transfersCache.unlockedTransferIds.add(transferId);
+        // Remove from transfers by ID cache
+        transfersCache.transfersById.delete(transferId);
+        
+        // Refresh cache
+        refreshTransfersCache(userAddress);
+        
+        return { success: true, hash };
+      } catch (alternativeError) {
+        console.error("Alternative multicall format also failed:", alternativeError);
+        throw alternativeError; // Throw to be caught by outer catch
+      }
+    }
   } catch (error) {
     console.error("Error executing unlock and withdraw:", error);
-    return { success: false, message: "Failed to unlock and withdraw" };
+    
+    // Provide a more user-friendly error message
+    let errorMessage = "Failed to unlock and withdraw";
+    
+    if (error.message) {
+      if (error.message.includes("user rejected") || 
+          error.message.includes("User rejected") ||
+          error.message.includes("cancelled") || 
+          error.message.includes("denied")) {
+        errorMessage = "Transaction was rejected in your wallet";
+      } else if (error.message.includes("gas")) {
+        errorMessage = "Transaction failed due to gas estimation. Try again.";
+      } else {
+        errorMessage += ": " + error.message.substring(0, 100);
+      }
+    }
+    
+    return { success: false, message: errorMessage };
   }
 }
 
@@ -457,22 +586,27 @@ export async function prepareReverseAndWithdrawCalldata({
   slowContract = getSlowContract()
 }) {
   try {
+    console.log("Preparing reverse and withdraw calldata for transferId:", transferId);
+    
     if (!slowContract) {
       throw new Error("Contract not available");
     }
     
+    // First, get the transfer details
     const transfer = await slowContract.read.pendingTransfers([transferId]);
-
+    
     if (transfer[0] === 0n) {
       throw new Error("Transfer does not exist or has already been unlocked/reversed");
     }
 
+    // Encode the reverse function call - passes just transferId
     const reverseCalldata = encodeFunctionData({
       abi: SlowAbi,
       functionName: 'reverse',
       args: [transferId]
     });
     
+    // Encode the withdrawFrom function call
     const withdrawCalldata = encodeFunctionData({
       abi: SlowAbi,
       functionName: 'withdrawFrom',
@@ -484,6 +618,7 @@ export async function prepareReverseAndWithdrawCalldata({
       ]
     });
 
+    // Return the array of calldata for the multicall
     return [reverseCalldata, withdrawCalldata];
   } catch (error) {
     console.error("Error preparing reverse multicall data:", error);
@@ -492,7 +627,7 @@ export async function prepareReverseAndWithdrawCalldata({
 }
 
 /**
- * Reverse and withdraw funds in a single transaction
+ * Reverse and withdraw funds in a single transaction using multicall
  * @param {Object} params - Parameters
  * @returns {Promise<Object>} - Result of the operation
  */
@@ -516,6 +651,7 @@ export async function reverseAndWithdraw({
       };
     }
 
+    // Check if transfer can be reversed
     const canReverse = await canReverseTransfer({ transferId, slowContract });
     
     if (!canReverse.success || !canReverse.canReverse) {
@@ -529,23 +665,102 @@ export async function reverseAndWithdraw({
       }
     }
 
+    // Prepare the calldata for the multicall - same approach as unlock
     const calldata = await prepareReverseAndWithdrawCalldata({
       transferId,
       userAddress,
       slowContract
     });
 
-    const hash = await slowContract.write.multicall([calldata]);
-    
-    // Add the transfer ID to our unlocked set
-    transfersCache.unlockedTransferIds.add(transferId);
-    
-    // Refresh cache
-    refreshTransfersCache(userAddress);
-    
-    return { success: true, hash };
+    // Try the direct approach first (passing calldata directly)
+    try {
+      console.log("Executing reverse multicall...");
+      const hash = await slowContract.write.multicall(calldata, {
+        account: userAddress
+      });
+      
+      // Add the transfer ID to our unlocked set
+      transfersCache.unlockedTransferIds.add(transferId);
+      // Remove from transfers by ID cache
+      transfersCache.transfersById.delete(transferId);
+      
+      // Refresh cache
+      refreshTransfersCache(userAddress);
+      
+      return { 
+        success: true, 
+        hash,
+        message: "Transfer reversed and funds returned to your wallet!" 
+      };
+    } catch (primaryError) {
+      console.error("First multicall attempt failed:", primaryError);
+      
+      // Handle user rejection
+      if (primaryError.message && 
+          (primaryError.message.includes("user rejected") || 
+           primaryError.message.includes("cancelled") || 
+           primaryError.message.includes("denied"))) {
+        return { success: false, message: "Transaction was rejected in your wallet" };
+      }
+      
+      // If first approach fails, try alternative format (wrapping in an array)
+      try {
+        console.log("Trying alternative multicall format with [calldata]");
+        const hash = await slowContract.write.multicall([calldata], {
+          account: userAddress,
+          gas: 600000n // Higher gas to be safe
+        });
+        
+        // Add the transfer ID to our unlocked set
+        transfersCache.unlockedTransferIds.add(transferId);
+        // Remove from transfers by ID cache
+        transfersCache.transfersById.delete(transferId);
+        
+        // Refresh cache
+        refreshTransfersCache(userAddress);
+        
+        return { 
+          success: true, 
+          hash,
+          message: "Transfer reversed and funds returned to your wallet!" 
+        };
+      } catch (alternativeError) {
+        console.error("Alternative multicall format also failed:", alternativeError);
+        
+        // If the user rejected the transaction, return that message
+        if (alternativeError.message && 
+            (alternativeError.message.includes("user rejected") || 
+             alternativeError.message.includes("cancelled") || 
+             alternativeError.message.includes("denied"))) {
+          return { success: false, message: "Transaction was rejected in your wallet" };
+        }
+        
+        throw alternativeError; // Throw to be caught by outer catch
+      }
+    }
   } catch (error) {
     console.error("Error executing reverse and withdraw:", error);
-    return { success: false, message: "Failed to reverse and return funds" };
+    
+    // Provide a user-friendly error message
+    let errorMessage = "Failed to reverse transfer";
+    
+    if (error.message) {
+      if (error.message.includes("user rejected") || 
+          error.message.includes("User rejected") ||
+          error.message.includes("cancelled") || 
+          error.message.includes("denied")) {
+        errorMessage = "Transaction was rejected in your wallet";
+      } else if (error.message.includes("TimelockExpired")) {
+        errorMessage = "Transfer can't be reversed because the timelock has expired";
+      } else if (error.message.includes("Unauthorized")) {
+        errorMessage = "You are not authorized to reverse this transfer";
+      } else if (error.message.includes("gas")) {
+        errorMessage = "Transaction failed due to gas estimation. Try again.";
+      } else {
+        errorMessage += ": " + error.message.substring(0, 100);
+      }
+    }
+    
+    return { success: false, message: errorMessage };
   }
 }

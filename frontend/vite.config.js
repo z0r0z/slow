@@ -23,12 +23,26 @@ export default defineConfig({
     assetsInlineLimit: 100000000,
     chunkSizeWarningLimit: 100000000,
     cssCodeSplit: false,
+    // Enable code compression and optimization
+    terserOptions: {
+      compress: {
+        drop_console: process.env.NODE_ENV === 'production',
+        drop_debugger: true
+      }
+    },
+    // Enable source maps only in development
+    sourcemap: process.env.NODE_ENV !== 'production',
   },
   define: {
     'process.env': JSON.stringify(process.env),
     'global': {},
     // Make sure PROJECT_ID from .env is accessible
     'process.env.PROJECT_ID': JSON.stringify(process.env.PROJECT_ID),
+    // Remove console.log calls in production
+    ...(process.env.NODE_ENV === 'production' ? {
+      'console.log': '"() => {}"',
+      'console.debug': '"() => {}"',
+    } : {}),
   },
   resolve: {
     alias: {

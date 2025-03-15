@@ -11,21 +11,24 @@ import {
   formatAddress,
   checkAllowance,
   approveToken,
-  depositFunds
+  depositFunds,
+  getSlowContract
 } from './services/wallet/walletService';
 import {
   loadPendingTransfers,
   reverseTransfer,
   unlockTransfer,
   unlockAndWithdraw,
-  reverseAndWithdraw
+  reverseAndWithdraw,
+  setupTransferRefreshAfterTx
 } from './services/transfers/transferService';
 import {
   showToast,
   showLoading,
   hideLoading,
   formatCustomTimeInputs,
-  formatNumber
+  formatNumber,
+  debounce
 } from './services/utils';
 
 // Initialize application state
@@ -95,56 +98,79 @@ const uiController = new UIController(elements);
  * @returns {Promise<boolean>} - True if successfully connected
  */
 async function handleConnectWallet() {
-  try {    
-    console.log("Clicked handleConnectWallet")
-    const result = await connectWallet();
+  try {
+    console.log("Clicked handleConnectWallet");
+    // Always use a tiny delay before starting wallet connection
+    // This ensures any DOM events finish processing
+    await new Promise(resolve => setTimeout(resolve, 50));
     
-    if (!result.success) {
-      showToast(elements.toast, result.message || "Failed to connect wallet.", 3000);
+    console.log("Initiating wallet connection...");
+    try {
+      const result = await connectWallet();
+      
+      // Show loading only after the wallet popup is handled
+      showLoading(elements.loadingIndicator, elements.loadingText, "Finalizing connection...");
+      
+      if (!result.success) {
+        showToast(elements.toast, result.message || "Failed to connect wallet.", 3000);
+        hideLoading(elements.loadingIndicator);
+        return false;
+      }
+      
+      // Update application state
+      appState.updateWallet({
+        connected: true,
+        address: result.address,
+        walletClient: result.walletClient,
+        publicClient: result.publicClient,
+        chainId: result.chainId,
+        ensName: result.ensName,
+        label: result.label
+      });
+      
+      // Update UI
+      if (result.ensName) {
+        elements.walletButton.textContent = result.ensName;
+      } else {
+        elements.walletButton.textContent = formatAddress(result.address);
+      }
+      
+      elements.$address.innerHTML = formatAddress(result.address);
+      elements.$disconnected.classList.add("hidden");
+      
+      // Force update the wallet button text
+      const walletBtn = document.getElementById("walletButton");
+      if (walletBtn) {
+        walletBtn.textContent = result.ensName || formatAddress(result.address);
+        console.log("Updated wallet button text to:", walletBtn.textContent);
+      }
+      
+      showToast(elements.toast, "Wallet connected successfully!", 3000);
+      
+      // Verify contract connection after wallet is connected
+      const slowContract = getSlowContract();
+      if (!slowContract) {
+        console.warn("Warning: SLOW contract not initialized after wallet connection");
+        showToast(elements.toast, "Wallet connected, but contract not initialized. Please try reloading the page.", 5000);
+      } else {
+        console.log("SLOW contract initialized successfully after wallet connection");
+      }
+      
+      // Load pending transfers with forceRefresh to avoid "Already loading transfers" error
+      await handleLoadPendingTransfers(true);
+      
       hideLoading(elements.loadingIndicator);
+      return true;
+    } catch (connectError) {
+      console.error("Error in connectWallet:", connectError);
+      hideLoading(elements.loadingIndicator);
+      showToast(elements.toast, "Failed to connect wallet. Please try again.", 3000);
       return false;
     }
-    
-    // Update application state
-    appState.updateWallet({
-      connected: true,
-      address: result.address,
-      walletClient: result.walletClient,
-      publicClient: result.publicClient,
-      chainId: result.chainId,
-      ensName: result.ensName,
-      label: result.label
-    });
-    
-    // Update UI
-    if (result.ensName) {
-      elements.walletButton.textContent = result.ensName;
-    } else {
-      elements.walletButton.textContent = formatAddress(result.address);
-    }
-    
-    elements.$address.innerHTML = formatAddress(result.address);
-    // elements.$wallet.classList.remove("hidden");
-    elements.$disconnected.classList.add("hidden");
-    
-    // Force update the wallet button text
-    const walletBtn = document.getElementById("walletButton");
-    if (walletBtn) {
-      walletBtn.textContent = result.ensName || formatAddress(result.address);
-      console.log("Updated wallet button text to:", walletBtn.textContent);
-    }
-    
-    showToast(elements.toast, "Wallet connected successfully!", 3000);
-    
-    // Load pending transfers
-    await handleLoadPendingTransfers();
-    
-    hideLoading(elements.loadingIndicator);
-    return true;
   } catch (error) {
-    console.error("Error connecting wallet:", error);
-    showToast(elements.toast, "Failed to connect wallet. Please try again.", 3000);
+    console.error("Error in handleConnectWallet:", error);
     hideLoading(elements.loadingIndicator);
+    showToast(elements.toast, "Failed to connect wallet. Please try again.", 3000);
     return false;
   }
 }
@@ -258,8 +284,9 @@ async function resolveAddressOrENS(input) {
 
 /**
  * Load pending transfers
+ * @param {boolean} forceRefresh - Force refresh even if already loading
  */
-async function handleLoadPendingTransfers() {
+async function handleLoadPendingTransfers(forceRefresh = false) {
   if (!appState.wallet.connected) {
     showToast(elements.toast, "Please connect your wallet first", 3000);
     return;
@@ -279,7 +306,8 @@ async function handleLoadPendingTransfers() {
     const result = await loadPendingTransfers({
       address: appState.wallet.address,
       publicClient: appState.wallet.publicClient,
-      isDetailed: true
+      isDetailed: true,
+      forceRefresh: forceRefresh
     });
     
     if (result.success) {
@@ -295,7 +323,8 @@ async function handleLoadPendingTransfers() {
         uiController.updateTransferView(
           appState,
           handleReverseAndWithdraw,
-          handleUnlockAndWithdraw
+          handleUnlockAndWithdraw,
+          handleUnlockTransfer
         );
       }
     } else {
@@ -324,26 +353,91 @@ async function handleLoadPendingTransfers() {
 async function handleUnlockAndWithdraw(transferId) {
   if (!appState.wallet.connected) {
     showToast(elements.toast, "Please connect your wallet first", 3000);
-    await handleConnectWallet();
-    if (!appState.wallet.connected) return;
+    const connected = await handleConnectWallet();
+    if (!connected) return;
   }
   
-  showLoading(elements.loadingIndicator, elements.loadingText, "Unlocking and withdrawing funds...");
+  console.log("Executing unlock and withdraw for transfer:", transferId);
   
-  const result = await unlockAndWithdraw({
-    transferId,
-    userAddress: appState.wallet.address
-  });
-  
-  hideLoading(elements.loadingIndicator);
-  
-  if (result.success) {
-    showToast(elements.toast, "Transfer unlocked and funds withdrawn!", 5000);
+  try {
+    // Don't show loading until after wallet interaction
+    const result = await unlockAndWithdraw({
+      transferId,
+      userAddress: appState.wallet.address
+    });
     
-    // Refresh transfers
-    await handleLoadPendingTransfers();
-  } else {
-    showToast(elements.toast, result.message || "Failed to unlock and withdraw", 5000);
+    if (result.success) {
+      showToast(elements.toast, "Transfer unlocked and funds withdrawn!", 5000);
+      
+      // Refresh transfers
+      await handleLoadPendingTransfers(true);
+    } else {
+      showToast(elements.toast, result.message || "Failed to unlock and withdraw", 5000);
+    }
+  } catch (error) {
+    console.error("Error in unlock and withdraw:", error);
+    hideLoading(elements.loadingIndicator);
+    
+    let errorMessage = "Failed to unlock transfer";
+    
+    if (error.message) {
+      if (error.message.includes("rejected") || error.message.includes("cancelled")) {
+        errorMessage = "Transaction was rejected in wallet";
+      } else if (error.message.includes("timelock")) {
+        errorMessage = "Transfer timelock has not expired yet";
+      } else {
+        errorMessage += ": " + error.message;
+      }
+    }
+    
+    showToast(elements.toast, errorMessage, 5000);
+  }
+}
+
+/**
+ * Just unlock a transfer for the recipient (without withdrawing)
+ * @param {string} transferId - ID of the transfer to unlock
+ */
+async function handleUnlockTransfer(transferId) {
+  if (!appState.wallet.connected) {
+    showToast(elements.toast, "Please connect your wallet first", 3000);
+    const connected = await handleConnectWallet();
+    if (!connected) return;
+  }
+  
+  console.log("Executing unlock for transfer:", transferId);
+  
+  try {
+    // Don't show loading until after wallet interaction
+    const result = await unlockTransfer({
+      transferId
+    });
+    
+    if (result.success) {
+      showToast(elements.toast, "Transfer unlocked for recipient successfully!", 5000);
+      
+      // Refresh transfers
+      await handleLoadPendingTransfers(true);
+    } else {
+      showToast(elements.toast, result.message || "Failed to unlock transfer", 5000);
+    }
+  } catch (error) {
+    console.error("Error in unlock transfer:", error);
+    hideLoading(elements.loadingIndicator);
+    
+    let errorMessage = "Failed to unlock transfer";
+    
+    if (error.message) {
+      if (error.message.includes("rejected") || error.message.includes("cancelled")) {
+        errorMessage = "Transaction was rejected in wallet";
+      } else if (error.message.includes("timelock")) {
+        errorMessage = "Transfer timelock has not expired yet";
+      } else {
+        errorMessage += ": " + error.message;
+      }
+    }
+    
+    showToast(elements.toast, errorMessage, 5000);
   }
 }
 
@@ -352,28 +446,153 @@ async function handleUnlockAndWithdraw(transferId) {
  * @param {string} transferId - ID of the transfer to reverse and withdraw
  */
 async function handleReverseAndWithdraw(transferId) {
-  if (!appState.wallet.connected) {
-    showToast(elements.toast, "Please connect your wallet first", 3000);
-    await handleConnectWallet();
-    if (!appState.wallet.connected) return;
-  }
+  console.warn("▶️ handleReverseAndWithdraw called with transferId:", transferId);
   
-  showLoading(elements.loadingIndicator, elements.loadingText, "Reversing transfer...");
-  
-  const result = await reverseAndWithdraw({
-    transferId,
-    userAddress: appState.wallet.address
-  });
-  
-  hideLoading(elements.loadingIndicator);
-  
-  if (result.success) {
-    showToast(elements.toast, "Transfer reversed and funds returned!", 5000);
+  try {
+    // Check wallet connection
+    if (!appState.wallet.connected) {
+      console.warn("❌ Wallet not connected");
+      showToast(elements.toast, "Please connect your wallet first", 3000);
+      const connected = await handleConnectWallet();
+      if (!connected) {
+        return; // User canceled or connection failed
+      }
+    }
     
-    // Refresh transfers
-    await handleLoadPendingTransfers();
-  } else {
-    showToast(elements.toast, result.message || "Failed to reverse and withdraw", 5000);
+    console.warn("✅ Wallet connected, preparing to reverse transfer");
+    
+    // First verify that we can reverse this transfer
+    // Get the current contract instance
+    let slowContract = getSlowContract();
+    console.warn("Retrieved slow contract:", !!slowContract);
+    
+    if (!slowContract) {
+      console.warn("SlowContract not available, attempting to reconnect wallet");
+      
+      // Try to reconnect the wallet
+      const walletConnectionResult = await connectWallet();
+      console.warn("Wallet reconnection result:", walletConnectionResult);
+      
+      // Try to get the contract again
+      slowContract = getSlowContract();
+      console.warn("Refreshed contract available:", !!slowContract);
+      
+      if (!slowContract) {
+        showToast(elements.toast, "Contract not available. Please check your connection and try again.", 5000);
+        return;
+      }
+    }
+    
+    // Check if transfer can be reversed - but don't show loading yet
+    // to allow wallet popup to be visible
+    try {
+      console.warn("Checking if transfer can be reversed...");
+      const canReverseResult = await slowContract.read.canReverseTransfer([transferId]);
+      const canReverse = canReverseResult[0];
+      const reason = canReverseResult[1];
+      
+      console.warn("Can reverse check:", { canReverse, reason });
+      
+      if (!canReverse) {
+        if (reason === "0x8f9a780c") {
+          showToast(elements.toast, "This transfer can't be reversed because the timelock has expired.", 5000);
+        } else {
+          showToast(elements.toast, "This transfer can't be reversed.", 5000);
+        }
+        return;
+      }
+    } catch (checkError) {
+      console.error("Error checking if transfer can be reversed:", checkError);
+      if (checkError.message && checkError.message.includes("contract not available")) {
+        showToast(elements.toast, "Contract not available. Please check your wallet connection and try again.", 5000);
+        return;
+      }
+      // Continue anyway for other errors - the main reverseAndWithdraw will do this check again
+    }
+    
+    // Verify we have a valid address before proceeding
+    if (!appState.wallet.address) {
+      showToast(elements.toast, "Wallet address not found. Please try reconnecting your wallet.", 5000);
+      return;
+    }
+    
+    // Execute the reverse and withdraw operation - Without loading yet
+    // to allow the wallet popup to be visible
+    console.warn("Calling reverseAndWithdraw with:", {
+      transferId,
+      userAddress: appState.wallet.address
+    });
+    
+    // Now execute the transaction and wait for the wallet popup
+    const result = await reverseAndWithdraw({
+      transferId,
+      userAddress: appState.wallet.address
+    });
+    
+    // After transaction is sent (and wallet popup is handled), show loading
+    // while we wait for confirmation
+    showLoading(elements.loadingIndicator, elements.loadingText, "Processing transaction...");
+    
+    // Once we get a result, hide loading
+    hideLoading(elements.loadingIndicator);
+    
+    if (result.success) {
+      // Show appropriate success message based on operation details
+      if (result.message) {
+        showToast(elements.toast, result.message, 5000);
+      } else if (result.withdrawHash) {
+        // Two separate transactions were used
+        showToast(elements.toast, "Transfer reversed and funds returned in two transactions!", 5000);
+      } else if (result.hash) {
+        // One multicall transaction was used
+        showToast(elements.toast, "Transfer reversed and funds returned in a single multicall transaction!", 5000);
+      } else {
+        // Generic fallback
+        showToast(elements.toast, "Transfer reversed and funds returned!", 5000);
+      }
+      
+      // Refresh transfers
+      await handleLoadPendingTransfers(true);
+    } else {
+      // Enhanced error message
+      let errorMsg = result.message || "Failed to reverse and withdraw";
+      
+      // Provide guidance on what to do next
+      if (errorMsg.includes("rejected")) {
+        errorMsg = "Transaction was rejected in your wallet. Try again when you're ready.";
+      } else if (errorMsg.includes("gas")) {
+        errorMsg = "Gas estimation failed. Try again or try during lower network congestion.";
+      }
+      
+      showToast(elements.toast, errorMsg, 5000);
+    }
+  } catch (error) {
+    console.error("Error in handleReverseAndWithdraw:", error);
+    hideLoading(elements.loadingIndicator);
+    
+    // Provide a more user-friendly error message
+    let errorMessage = "Failed to reverse transfer";
+    
+    if (error.message) {
+      if (error.message.includes("user rejected") || 
+          error.message.includes("User rejected") || 
+          error.message.includes("cancelled") || 
+          error.message.includes("denied")) {
+        errorMessage = "Transaction was rejected in wallet";
+      } else if (error.message.includes("TimelockExpired")) {
+        errorMessage = "Transfer can't be reversed because the timelock has expired";
+      } else if (error.message.includes("Unauthorized")) {
+        errorMessage = "You are not authorized to reverse this transfer";
+      } else if (error.message.includes("gas")) {
+        errorMessage = "Transaction failed due to gas estimation. Try again.";
+      } else if (error.message.includes("wallet")) {
+        errorMessage = "Wallet connection issue. Please try reconnecting.";
+      } else {
+        errorMessage += ": " + error.message;
+      }
+    }
+    
+    showToast(elements.toast, errorMessage, 5000);
   }
 }
 
@@ -384,8 +603,8 @@ async function handleDepositFunds() {
   try {
     if (!appState.wallet.connected) {
       showToast(elements.toast, "Please connect your wallet first.", 3000);
-      await handleConnectWallet();
-      if (!appState.wallet.connected) return;
+      const connected = await handleConnectWallet();
+      if (!connected) return;
     }
 
     const {
@@ -400,31 +619,71 @@ async function handleDepositFunds() {
       return;
     }
 
-    showLoading(elements.loadingIndicator, elements.loadingText, "Creating time-locked transfer...");
+    console.log("Preparing to deposit funds to SLOW contract...");
     
+    // First execute the transaction - don't show loading so wallet popup is visible
     const result = await depositFunds({
       tokenAddress: selectedCryptoAddress,
       recipient: resolvedAddress,
       amount: selectedAmount,
-      delay: selectedTime
+      delay: selectedTime,
+      waitForConfirmation: true // Wait for blockchain confirmation
     });
 
+    // Show loading after wallet interaction, for blockchain confirmation
+    showLoading(elements.loadingIndicator, elements.loadingText, "Waiting for confirmation...");
+
     if (result.success) {
-      showLoading(elements.loadingIndicator, elements.loadingText, "Transaction confirmed! Loading updated transfers...");
-      showToast(elements.toast, "Transaction confirmed! Funds sent to SLOW contract.", 5000);
+      if (result.confirmed) {
+        showToast(elements.toast, "Transaction confirmed! Funds sent to SLOW contract.", 5000);
+      } else {
+        showToast(elements.toast, "Transaction sent! Waiting for confirmation...", 5000);
+      }
       
-      // Refresh transfers and reset app state
-      await handleLoadPendingTransfers();
-      resetApp();
+      showLoading(elements.loadingIndicator, elements.loadingText, "Updating transfer data...");
+      
+      // Set up polling for updated transfers
+      setupTransferRefreshAfterTx(result.hash, appState.wallet.address);
+      
+      // Wait a bit for our initial transfer data to be updated
+      setTimeout(async () => {
+        // First force-refresh transfers
+        await handleLoadPendingTransfers(true);
+        hideLoading(elements.loadingIndicator);
+        
+        // Reset app state and go back to initial view
+        resetApp();
+        
+        // Show toast encouraging user to check the transfers tab
+        showToast(elements.toast, "Your new transfer will appear in the 'Take' tab once confirmed.", 5000);
+      }, 2000);
     } else {
-      showToast(elements.toast, result.message || "Transaction failed. Please try again.", 5000);
+      hideLoading(elements.loadingIndicator);
+      
+      let errorMessage = result.message || "Transaction failed. Please try again.";
+      
+      // Make transaction rejection messages more user-friendly
+      if (errorMessage.includes("rejected") || errorMessage.includes("cancelled")) {
+        errorMessage = "Transaction was rejected in your wallet.";
+      }
+      
+      showToast(elements.toast, errorMessage, 5000);
     }
-    
-    hideLoading(elements.loadingIndicator);
   } catch (error) {
     console.error("Error depositing funds:", error);
     hideLoading(elements.loadingIndicator);
-    showToast(elements.toast, "Transaction failed. Please try again.", 5000);
+    
+    let errorMessage = "Transaction failed. Please try again.";
+    
+    if (error.message) {
+      if (error.message.includes("rejected") || error.message.includes("cancelled")) {
+        errorMessage = "Transaction was rejected in your wallet.";
+      } else if (error.message.includes("insufficient")) {
+        errorMessage = "Insufficient funds for this transfer.";
+      }
+    }
+    
+    showToast(elements.toast, errorMessage, 5000);
   }
 }
 
@@ -435,7 +694,13 @@ async function handleDepositFunds() {
 /**
  * Handle background clicks and modal dismissals
  */
-elements.body.addEventListener("click", function (event) {
+elements.body.onclick = function(event) {
+  // Debug to see what element was clicked
+  console.log("🔍 Body click detected on:", event.target.tagName, 
+              event.target.id ? `#${event.target.id}` : '',
+              event.target.className ? `.${event.target.className.split(' ').join('.')}` : '');
+  
+  // List of interactive elements that should handle their own clicks
   const interactiveElements = [
     elements.buttonContainer,
     elements.cryptoGrid,
@@ -449,6 +714,11 @@ elements.body.addEventListener("click", function (event) {
     elements.transferTabs,
     elements.customTimeModal,
     elements.customAmountModal,
+    elements.sendBox,
+    elements.takeBox,
+    elements.$connect,
+    elements.$disconnect,
+    elements.$wallet,
   ];
 
   // Check if clicked on action menu
@@ -456,12 +726,17 @@ elements.body.addEventListener("click", function (event) {
     uiController.actionMenu &&
     (uiController.actionMenu.contains(event.target) || uiController.actionMenu === event.target)
   ) {
+    console.log("Click on action menu - let the menu handle it");
     return;
   }
 
+  // Check if the click was on an interactive element
   const isInteractive = interactiveElements.some(
-    (el) => el && el.contains(event.target),
+    (el) => el && el.contains(event.target)
   );
+  
+  // Log the interactive status
+  console.log("Is interactive element:", isInteractive);
 
   // Handle confirmation modal click outside
   if (
@@ -518,7 +793,7 @@ elements.body.addEventListener("click", function (event) {
     uiController.toggleColors();
     elements.backButton.style.display = "block";
   }
-});
+};
 
 /**
  * Reset application state
@@ -548,7 +823,8 @@ function resetApp() {
 /**
  * Handle back button clicks
  */
-elements.backButton.addEventListener("click", function (event) {
+elements.backButton.onclick = function(event) {
+  console.log("💥 Back button ONCLICK triggered");
   event.stopPropagation();
 
   // Handle modals first
@@ -558,22 +834,22 @@ elements.backButton.addEventListener("click", function (event) {
     elements.ensStatus.textContent = "";
     elements.ensStatus.className = "ens-status";
     appState.currentState.screen = "timeShown";
-    return;
+    return false;
   }
 
   if (elements.approveModal.style.display === "flex") {
     elements.approveModal.style.display = "none";
-    return;
+    return false;
   }
 
   if (elements.customTimeModal.style.display === "flex") {
     elements.customTimeModal.style.display = "none";
-    return;
+    return false;
   }
 
   if (elements.customAmountModal.style.display === "flex") {
     elements.customAmountModal.style.display = "none";
-    return;
+    return false;
   }
 
   // Handle state history
@@ -582,10 +858,7 @@ elements.backButton.addEventListener("click", function (event) {
     const previousState = { ...currentState };
 
     // Handle background color
-    if (
-      previousState.invertedBackground !==
-      currentState.invertedBackground
-    ) {
+    if (previousState.invertedBackground !== currentState.invertedBackground) {
       uiController.toggleColors();
     }
 
@@ -614,12 +887,14 @@ elements.backButton.addEventListener("click", function (event) {
       elements.backButton.style.display = "none";
     }
   }
-});
+  return false;
+};
 
 /**
  * Handle send box click
  */
-elements.sendBox.addEventListener("click", function (event) {
+elements.sendBox.onclick = function(event) {
+  console.log("💥 Send box ONCLICK triggered");
   event.stopPropagation();
 
   appState.saveState();
@@ -635,26 +910,34 @@ elements.sendBox.addEventListener("click", function (event) {
   }
 
   elements.backButton.style.display = "block";
-});
+  return false;
+};
 
 /**
  * Handle take box click
  */
-elements.takeBox.addEventListener("click", function (event) {
+elements.takeBox.onclick = function(event) {
+  console.log("💥 Take box ONCLICK triggered");
   event.stopPropagation();
 
   if (!appState.wallet.connected) {
     showToast(elements.toast, "Please connect your wallet first", 3000);
-    handleConnectWallet().then((connected) => {
-      if (connected) {
-        handleTakeBoxClick();
-      }
-    });
-    return;
+    
+    handleConnectWallet()
+      .then((connected) => {
+        if (connected) {
+          handleTakeBoxClick();
+        }
+      })
+      .catch(error => {
+        console.error("Error connecting wallet from take box:", error);
+      });
+    return false;
   }
 
   handleTakeBoxClick();
-});
+  return false;
+};
 
 /**
  * Helper function for take box click handling
@@ -667,7 +950,23 @@ function handleTakeBoxClick() {
   if (appState.currentState.takeBoxClicked) {
     uiController.updateScreenVisibility("takeLinesShown");
     appState.currentState.screen = "takeLinesShown";
-    handleLoadPendingTransfers();
+    
+    // Hide the transfer tabs as we're showing both inbound and outbound transfers
+    elements.transferTabs.style.display = "none";
+    
+    // Set to loading state first
+    const loadingMsg = document.createElement("div");
+    loadingMsg.className = "take-loading";
+    loadingMsg.innerHTML = `
+      <div class="spinner"></div>
+      <div>Loading transfers...</div>
+    `;
+    elements.takeLinesContainer.innerHTML = '';
+    elements.takeLinesContainer.appendChild(loadingMsg);
+    
+    // Always force-refresh the transfers when entering the Take view
+    // This ensures we have the latest data, even after a recent transaction
+    handleLoadPendingTransfers(true);
   } else {
     uiController.updateScreenVisibility("initial");
     appState.currentState.screen = "initial";
@@ -679,77 +978,58 @@ function handleTakeBoxClick() {
 /**
  * Handle wallet button click
  */
-elements.walletButton.addEventListener("click", async function (event) {
+// Direct onclick handler for more reliable behavior
+elements.walletButton.onclick = function(event) {
+  // Debug to see if this handler is triggered
+  console.log("💥 Wallet button ONCLICK triggered");
+  
   event.stopPropagation();
-  console.log("Wallet button clicked");
+  console.log("Wallet connection state:", appState.wallet.connected);
   
   if (appState.wallet.connected) {
     handleDisconnectWallet();
   } else {
-    try {
-      await handleConnectWallet();
-    } catch (error) {
+    console.log("⚠️ Attempting wallet connection from button click");
+    handleConnectWallet().catch(error => {
       console.error("Wallet button connection error:", error);
       showToast(elements.toast, "Failed to connect wallet", 3000);
-    }
+    });
   }
-});
+  
+  // Return false to prevent default behavior
+  return false;
+};
 
 /**
  * Handle connect button click
  */
-elements.$connect.addEventListener("click", async (event) => {
+elements.$connect.onclick = function(event) {
+  // Debug to see if this handler is triggered
+  console.log("💥 Connect button ONCLICK triggered");
+  
   event.stopPropagation();
-  console.log("Connect button clicked");
-  try {
-    await handleConnectWallet();
-  } catch (error) {
+  // Don't use async here - directly call the function
+  handleConnectWallet().catch(error => {
     console.error("Connect button error:", error);
     showToast(elements.toast, "Failed to connect wallet", 3000);
-  }
-});
+  });
+  
+  // Return false to prevent default behavior
+  return false;
+};
 
 /**
  * Handle disconnect button click
  */
-elements.$disconnect.addEventListener("click", (event) => {
+elements.$disconnect.onclick = function(event) {
+  console.log("💥 Disconnect button ONCLICK triggered");
   event.stopPropagation();
   handleDisconnectWallet();
-});
+  return false;
+};
 
-/**
- * Handle outbound tab click
- */
-elements.outboundTab.addEventListener("click", function (event) {
-  event.stopPropagation();
-
-  elements.outboundTab.classList.add("active");
-  elements.inboundTab.classList.remove("active");
-
-  appState.currentState.transferTab = "outbound";
-  uiController.updateTransferView(
-    appState,
-    handleReverseAndWithdraw,
-    handleUnlockAndWithdraw
-  );
-});
-
-/**
- * Handle inbound tab click
- */
-elements.inboundTab.addEventListener("click", function (event) {
-  event.stopPropagation();
-
-  elements.inboundTab.classList.add("active");
-  elements.outboundTab.classList.remove("active");
-
-  appState.currentState.transferTab = "inbound";
-  uiController.updateTransferView(
-    appState,
-    handleReverseAndWithdraw,
-    handleUnlockAndWithdraw
-  );
-});
+// We no longer need tab click handlers as we show both inbound and outbound transfers
+// The tabs will be hidden in the UI
 
 /**
  * Handle crypto box selection
@@ -952,24 +1232,38 @@ elements.applyCustomTime.addEventListener("click", function (event) {
 /**
  * Handle recipient input with ENS resolution
  */
-elements.recipientInput.addEventListener("input", async function () {
-  const input = this.value.trim();
-  appState.currentState.recipient = input;
-
+// Create a debounced ENS resolver function with improved performance
+const debouncedENSResolver = debounce(async (input) => {
   if (input.length > 0) {
-    if (this.ensTimeout) {
-      clearTimeout(this.ensTimeout);
-    }
-
-    this.ensTimeout = setTimeout(async () => {
+    // Only proceed with ENS resolution for inputs that look legitimate
+    if (input.length >= 3 && (input.includes('.') || (input.startsWith('0x') && input.length >= 10))) {
       const result = await resolveAddressOrENS(input);
       uiController.updateAfterENSResolution(result, input);
-    }, 500);
+    } else {
+      elements.ensStatus.textContent = "Type a valid address or ENS name";
+      elements.ensStatus.className = "ens-status ens-error";
+      appState.currentState.resolvedAddress = null;
+    }
   } else {
     elements.ensStatus.textContent = "";
     elements.ensStatus.className = "ens-status";
     appState.currentState.resolvedAddress = null;
   }
+}, 400); // Reduce debounce time for better responsiveness
+
+elements.recipientInput.addEventListener("input", function () {
+  const input = this.value.trim();
+  appState.currentState.recipient = input;
+
+  if (input.length === 0) {
+    elements.ensStatus.textContent = "";
+    elements.ensStatus.className = "ens-status";
+    appState.currentState.resolvedAddress = null;
+    return;
+  }
+
+  // Use the debounced function for better performance
+  debouncedENSResolver(input);
 });
 
 /**
@@ -1078,38 +1372,46 @@ function init() {
     elements.$wallet.classList.add("hidden");
     elements.$disconnected.classList.remove("hidden"); // Show connect button when disconnected
   }
+  
+  // IMPORTANT: Do not add duplicate passive event listeners
+  // The existing click handler is already properly attached and working
+  // These passive handlers are causing conflicts with the actual handlers
 
-  // Handle window blur/focus events
-  window.addEventListener("blur", () => {
+  // Safely attach a single window blur handler
+  window.onblur = function() {
+    console.log("Window blur detected");
     // Clear only UI update intervals, not transaction timeouts
     if (appState.timeoutIds.progressBarUpdate) {
       clearInterval(appState.timeoutIds.progressBarUpdate);
       delete appState.timeoutIds.progressBarUpdate;
     }
-  });
+  };
 
-  window.addEventListener("focus", () => {
+  // Safely attach a single window focus handler
+  window.onfocus = function() {
+    console.log("Window focus detected");
     if (
       appState.currentState.screen === "takeLinesShown" &&
       appState.wallet.connected
     ) {
       // Only reload transfers if it's been a while since the last update
       if (Date.now() - appState.pendingTransfers.lastUpdated > 60000) {
-        handleLoadPendingTransfers();
+        handleLoadPendingTransfers(true); // Force refresh to avoid "Already loading" state
       } else {
         // Just update the progress bars
         uiController.updateProgressBars();
 
         // Set up interval for progress bar updates if not already running
         if (!appState.timeoutIds.progressBarUpdate) {
+          // Use a more efficient update interval (10 seconds instead of 5)
           appState.timeoutIds.progressBarUpdate = setInterval(
             () => uiController.updateProgressBars(),
-            5000
+            10000
           );
         }
       }
     }
-  });
+  };
 
   // Network connectivity checks
   function checkConnection() {
@@ -1122,7 +1424,9 @@ function init() {
     }
   }
 
-  window.addEventListener("online", () => {
+  // Safely attach single online/offline handlers
+  window.ononline = function() {
+    console.log("Online status detected");
     showToast(elements.toast, "You're back online!", 3000);
 
     if (
@@ -1131,18 +1435,22 @@ function init() {
     ) {
       handleLoadPendingTransfers();
     }
-  });
+  };
 
-  window.addEventListener("offline", () => {
+  window.onoffline = function() {
+    console.log("Offline status detected");
     showToast(elements.toast, "You're offline. Please check your connection.", 5000);
-  });
+  };
 
   // Check for Ethereum wallet
   if (!window.ethereum) {
+    console.log("No Ethereum provider detected, showing install option");
     elements.walletButton.textContent = "Install MetaMask";
-    elements.walletButton.addEventListener("click", () => {
+    // Override the existing onclick handler with MetaMask installation
+    elements.walletButton.onclick = function() {
       window.open("https://metamask.io/download.html", "_blank");
-    });
+      return false;
+    };
   }
 
   checkConnection();
