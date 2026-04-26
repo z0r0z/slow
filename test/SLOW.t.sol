@@ -29,7 +29,7 @@ contract SLOWTest is Test {
 
     function setUp() public payable {
         vm.createSelectFork(vm.rpcUrl("main")); // Ethereum mainnet fork.
-        slow = new SLOW();
+        slow = new SLOW("", "");
         token = new MockERC20("Test Token", "TEST", 18);
 
         owner = address(this);
@@ -710,6 +710,236 @@ contract SLOWTest is Test {
         console.log("\nToken: %s, Delay: %s seconds", tokenName, delay);
         console.log("URI: %s", tokenURI);
     }
+
+    // Test reverse on a transferId that was never created
+    function testReverseNonexistentTransferId() public {
+        vm.expectRevert(SLOW.TransferDoesNotExist.selector);
+        slow.reverse(0xdeadbeef);
+    }
+
+    // Test reverse on a transferId that was already reversed
+    function testReverseAfterAlreadyReversed() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.prank(user1);
+        slow.reverse(transferId);
+
+        vm.prank(user1);
+        vm.expectRevert(SLOW.TransferDoesNotExist.selector);
+        slow.reverse(transferId);
+    }
+
+    // Test reverse on a transferId that was already unlocked
+    function testReverseAfterUnlocked() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.warp(block.timestamp + DELAY + 1);
+        slow.unlock(transferId);
+
+        vm.prank(user1);
+        vm.expectRevert(SLOW.TransferDoesNotExist.selector);
+        slow.reverse(transferId);
+    }
+
+    // Test depositTo rejects ETH attached to a non-zero token argument
+    function testDepositETHWithNonZeroTokenReverts() public {
+        vm.startPrank(user1);
+        vm.expectRevert(SLOW.InvalidDeposit.selector);
+        slow.depositTo{value: AMOUNT}(USDC, user2, 0, DELAY, "");
+        vm.stopPrank();
+    }
+
+    function testDepositETHWithMockTokenReverts() public {
+        vm.startPrank(user1);
+        vm.expectRevert(SLOW.InvalidDeposit.selector);
+        slow.depositTo{value: AMOUNT}(address(token), user2, 0, 0, "");
+        vm.stopPrank();
+    }
+
+    // ENUMERATION TESTS
+
+    // Pending transfer is recorded in outbound/inbound sets on creation
+    function testEnumerationAfterDeposit() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        assertEq(slow.outboundTransferCount(user1), 1);
+        assertEq(slow.inboundTransferCount(user2), 1);
+        assertEq(slow.outboundTransferAt(user1, 0), transferId);
+        assertEq(slow.inboundTransferAt(user2, 0), transferId);
+
+        uint256[] memory out = slow.getOutboundTransfers(user1);
+        uint256[] memory inb = slow.getInboundTransfers(user2);
+        assertEq(out.length, 1);
+        assertEq(inb.length, 1);
+        assertEq(out[0], transferId);
+        assertEq(inb[0], transferId);
+
+        // Counterparty sees nothing on the wrong side
+        assertEq(slow.inboundTransferCount(user1), 0);
+        assertEq(slow.outboundTransferCount(user2), 0);
+    }
+
+    // Zero-delay deposit does NOT touch the enumeration sets
+    function testEnumerationSkippedForZeroDelayDeposit() public {
+        vm.prank(user1);
+        slow.depositTo{value: AMOUNT}(address(0), user2, 0, 0, "");
+
+        assertEq(slow.outboundTransferCount(user1), 0);
+        assertEq(slow.inboundTransferCount(user2), 0);
+    }
+
+    // Unlock removes the transferId from both sets
+    function testEnumerationAfterUnlock() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.warp(block.timestamp + DELAY + 1);
+        slow.unlock(transferId);
+
+        assertEq(slow.outboundTransferCount(user1), 0);
+        assertEq(slow.inboundTransferCount(user2), 0);
+        assertEq(slow.getOutboundTransfers(user1).length, 0);
+        assertEq(slow.getInboundTransfers(user2).length, 0);
+    }
+
+    // Reverse removes the transferId from both sets
+    function testEnumerationAfterReverse() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.prank(user1);
+        slow.reverse(transferId);
+
+        assertEq(slow.outboundTransferCount(user1), 0);
+        assertEq(slow.inboundTransferCount(user2), 0);
+    }
+
+    // Multiple pending transfers from one sender all enumerate
+    function testEnumerationMultiplePending() public {
+        vm.startPrank(user1);
+        uint256 t1 = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+        uint256 t2 = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+        uint256 t3 = slow.depositTo{value: AMOUNT}(address(0), guardian, 0, DELAY, "");
+        vm.stopPrank();
+
+        assertEq(slow.outboundTransferCount(user1), 3);
+        assertEq(slow.inboundTransferCount(user2), 2);
+        assertEq(slow.inboundTransferCount(guardian), 1);
+
+        uint256[] memory out = slow.getOutboundTransfers(user1);
+        // Set semantics: ordering is implementation-defined, so check membership.
+        bool hasT1; bool hasT2; bool hasT3;
+        for (uint256 i = 0; i < out.length; i++) {
+            if (out[i] == t1) hasT1 = true;
+            else if (out[i] == t2) hasT2 = true;
+            else if (out[i] == t3) hasT3 = true;
+        }
+        assertTrue(hasT1 && hasT2 && hasT3);
+    }
+
+    // Settling one transfer leaves siblings intact
+    function testEnumerationPartialSettlement() public {
+        vm.startPrank(user1);
+        uint256 t1 = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+        uint256 t2 = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+        slow.reverse(t1);
+        vm.stopPrank();
+
+        assertEq(slow.outboundTransferCount(user1), 1);
+        assertEq(slow.inboundTransferCount(user2), 1);
+        assertEq(slow.outboundTransferAt(user1, 0), t2);
+        assertEq(slow.inboundTransferAt(user2, 0), t2);
+    }
+
+    // safeTransferFrom with delay > 0 also populates sets
+    function testEnumerationAfterSafeTransferFrom() public {
+        // First, give user1 some unlocked SLOW with a delay-encoded id
+        vm.prank(user1);
+        uint256 depositId = slow.depositTo{value: AMOUNT}(address(0), user1, 0, DELAY, "");
+        vm.warp(block.timestamp + DELAY + 1);
+        slow.unlock(depositId);
+
+        uint256 id = calculateId(address(0), DELAY);
+        assertEq(slow.outboundTransferCount(user1), 0);
+        assertEq(slow.inboundTransferCount(user1), 0);
+
+        // Now user1 transfers to user2 — id encodes a non-zero delay, so it creates a pending
+        vm.prank(user1);
+        slow.safeTransferFrom(user1, user2, id, AMOUNT, "");
+
+        assertEq(slow.outboundTransferCount(user1), 1);
+        assertEq(slow.inboundTransferCount(user2), 1);
+    }
+
+    // ON-CHAIN HTML TESTS
+
+    // The constructor accepts arbitrary bytes; html() concatenates and returns them.
+    function testHtmlRoundtrip() public {
+        bytes memory part1 = bytes("<html><body>");
+        bytes memory part2 = bytes("hello slow</body></html>");
+        SLOW dapp = new SLOW(part1, part2);
+        bytes memory got = bytes(dapp.html());
+        bytes memory expected = bytes.concat(part1, part2);
+        assertEq(keccak256(got), keccak256(expected));
+        assertEq(got.length, expected.length);
+    }
+
+    // Empty payloads work fine (used in protocol-only tests).
+    function testHtmlEmpty() public {
+        SLOW dapp = new SLOW("", "");
+        assertEq(bytes(dapp.html()).length, 0);
+    }
+
+    // Real production deployment: split the actual frontend/index.html file in half
+    // and verify it survives the SSTORE2 roundtrip byte-identical.
+    function testHtmlFromIndexHtml() public {
+        bytes memory full = vm.readFileBinary("frontend/index.html");
+        uint256 mid = full.length / 2 + (full.length & 1);
+        bytes memory part1 = _slice(full, 0, mid);
+        bytes memory part2 = _slice(full, mid, full.length - mid);
+
+        // Each chunk must fit in a single SSTORE2 entry.
+        assertLt(part1.length, 24_575);
+        assertLt(part2.length, 24_575);
+
+        SLOW dapp = new SLOW(part1, part2);
+        bytes memory got = bytes(dapp.html());
+        assertEq(got.length, full.length);
+        assertEq(keccak256(got), keccak256(full));
+    }
+
+    function _slice(bytes memory data, uint256 start, uint256 len)
+        internal
+        pure
+        returns (bytes memory result)
+    {
+        result = new bytes(len);
+        assembly ("memory-safe") {
+            let src := add(add(data, 0x20), start)
+            let dst := add(result, 0x20)
+            mcopy(dst, src, len)
+        }
+    }
+
+    // Test that the receiver hook fired during reverse() cannot re-enter
+    function testReverseReentrancyBlocked() public {
+        ReentrantReceiver malicious = new ReentrantReceiver{value: AMOUNT}(slow);
+        uint256 transferId = malicious.deposit(user1, DELAY);
+
+        malicious.callReverse(transferId);
+
+        assertTrue(malicious.reentryRejected(), "reentry should be rejected");
+
+        uint256 id = calculateId(address(0), DELAY);
+        assertEq(slow.balanceOf(address(malicious), id), AMOUNT);
+        assertEq(slow.balanceOf(user1, id), 0);
+
+        (uint96 ts,,,,) = slow.pendingTransfers(transferId);
+        assertEq(ts, 0);
+    }
 }
 
 // Mock ERC20 token for testing
@@ -765,5 +995,49 @@ contract MockERC20 {
         balanceOf[to] += amount;
         totalSupply += amount;
         emit Transfer(address(0), to, amount);
+    }
+}
+
+// Receiver that attempts to re-enter SLOW from its onERC1155Received hook
+contract ReentrantReceiver {
+    SLOW slow;
+    bool public reentryRejected;
+
+    constructor(SLOW _slow) payable {
+        slow = _slow;
+    }
+
+    function deposit(address to, uint96 delay) external returns (uint256) {
+        return slow.depositTo{value: address(this).balance}(address(0), to, 0, delay, "");
+    }
+
+    function callReverse(uint256 transferId) external {
+        slow.reverse(transferId);
+    }
+
+    function onERC1155Received(address, address, uint256, uint256, bytes calldata)
+        external
+        returns (bytes4)
+    {
+        // Re-entry attempt — nonReentrant on unlock() should reject with Reentrancy().
+        try slow.unlock(0) {
+            // unreachable
+        } catch (bytes memory err) {
+            // bytes4(keccak256("Reentrancy()")) == 0xab143c06
+            if (err.length == 4 && bytes4(err) == 0xab143c06) {
+                reentryRejected = true;
+            }
+        }
+        return this.onERC1155Received.selector;
+    }
+
+    function onERC1155BatchReceived(
+        address,
+        address,
+        uint256[] calldata,
+        uint256[] calldata,
+        bytes calldata
+    ) external pure returns (bytes4) {
+        return this.onERC1155BatchReceived.selector;
     }
 }

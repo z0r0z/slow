@@ -1,32 +1,35 @@
 # CLAUDE.md - Frontend Developer Guide
 
-## Build Commands
-- `npm run build` - Build the project for production using Vite
-- `npm run dev` - Start the Vite development server with hot-reloading
-- `npm run preview` - Preview the production build locally
-- `npm run lint` - Run ESLint to check code style
-- `npm run test` - Run frontend tests
-- `npm run build:singlefile` - Generate a single HTML file with all CSS/JS inlined for IPFS deployment
-- `npm run deploy:pinata` - Build single HTML file and deploy to Pinata IPFS
+## Structure
 
-## Code Style Guidelines
-- **Imports**: Group imports by type (external libs first, then local modules, then styles)
-- **Formatting**: Use 2-space indentation, semicolons at line ends
-- **Naming**: camelCase for variables/functions, PascalCase for components/classes
-- **Functions**: Use arrow functions for callbacks, explicit function declarations for main functions
-- **Error Handling**: Use try/catch blocks with descriptive error messages
-- **Comments**: Use JSDoc style for function documentation
-- **Components**: Follow atomic design principles where applicable
+The entire dapp is a single self-contained `index.html` — inline CSS, inline JS, no build step, no external libraries. Designed to be servable from IPFS or stored on-chain (e.g. via SSTORE2).
 
-## Architecture Notes
-- Using viem for web3 functionality
-- Web3 onboard for wallet connections
-- Vite for bundling and development
-- Vanilla JavaScript for UI components
+## Run locally
 
-## IPFS Deployment
-- The IPFS deployment uses vite-plugin-singlefile to generate a single HTML file
-- The Vite configuration inlines all assets into a single HTML file using viteSingleFile
-- Resource paths are relative (./path) instead of absolute (/path) for IPFS compatibility
-- Pinata API is used for uploading to IPFS
-- The deployment script uses PINATA_JWT environment variable for authentication
+```
+python3 -m http.server 5173
+```
+
+Or any static file server. Open `http://localhost:5173/`.
+
+## Architecture
+
+- **Wallet**: EIP-1193 `window.ethereum` only — no web3-onboard, no WalletConnect.
+- **Chain**: Base (chainId 8453). Auto-prompts to switch / add the network.
+- **Contract calls**: Hand-rolled ABI codec. Function selectors are precomputed and inlined.
+- **ENS**: Native resolution via the mainnet ENS Registry → resolver → addr/name pattern. Embedded keccak-256 (BigInt-based) computes namehash. Reverse lookups verify forward resolution per ENSIP-3 best practice. No third-party ENS proxy contract.
+- **Reads**: Pending transfers come straight from the SLOW contract via `getOutboundTransfers` / `getInboundTransfers` — no off-chain indexer.
+- **Writes**: `eth_sendTransaction`. Settle flows (unlock+withdraw, reverse+withdraw) bundled via `multicall(bytes[])`.
+
+## Code conventions
+
+- 2-space indentation, single quotes for strings, semicolons at line ends.
+- IIFE wrapper at the bottom for scoping.
+- Function selectors and contract addresses live in the `Config` block at the top of the script.
+
+## Updating the ABI
+
+If the SLOW contract gains a new function:
+1. Run `cast sig "newFunction(types)"` to get the selector.
+2. Add it to the `SEL` object.
+3. Add the arg types to the appropriate `callData(...)` call site.

@@ -2,12 +2,14 @@
 pragma solidity ^0.8.19;
 
 import {Base64} from "@solady/src/utils/Base64.sol";
+import {SSTORE2} from "@solady/src/utils/SSTORE2.sol";
 import {ERC1155} from "@solady/src/tokens/ERC1155.sol";
 import {LibString} from "@soledge/src/utils/LibString.sol";
 import {Multicallable} from "@solady/src/utils/Multicallable.sol";
 import {SafeTransferLib} from "@solady/src/utils/SafeTransferLib.sol";
-import {ReentrancyGuard} from "@soledge/src/utils/ReentrancyGuard.sol";
+import {ReentrancyGuardTransient} from "@solady/src/utils/ReentrancyGuardTransient.sol";
 import {MetadataReaderLib} from "@solady/src/utils/MetadataReaderLib.sol";
+import {EnumerableSetLib} from "@solady/src/utils/EnumerableSetLib.sol";
 
 /// @notice Timelocked token sends
 /// @author z0r0z.eth for nani.eth
@@ -19,11 +21,12 @@ import {MetadataReaderLib} from "@solady/src/utils/MetadataReaderLib.sol";
 ///      - Locked balances must be unlocked upon the expiry
 ///      - Only unlocked balances can be spent in transfer
 ///      - Guardian approval can also be added to transfer
-contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
+contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     using MetadataReaderLib for address;
     using SafeTransferLib for address;
     using LibString for address;
     using LibString for uint256;
+    using EnumerableSetLib for EnumerableSetLib.Uint256Set;
 
     event Unlocked(address indexed user, uint256 indexed id, uint256 indexed amount);
     event TransferApproved(
@@ -37,6 +40,7 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
     error TransferDoesNotExist();
     error TimelockNotExpired();
     error TimelockExpired();
+    error InvalidDeposit();
     error Unauthorized();
 
     struct PendingTransfer {
@@ -61,7 +65,24 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
 
     mapping(address user => uint256) public nonces;
 
-    constructor() payable {}
+    mapping(address user => EnumerableSetLib.Uint256Set) internal _outboundTransfers;
+
+    mapping(address user => EnumerableSetLib.Uint256Set) internal _inboundTransfers;
+
+    // ON-CHAIN DAPP
+
+    address public immutable htmlChunk1;
+    address public immutable htmlChunk2;
+
+    constructor(bytes memory part1, bytes memory part2) payable {
+        htmlChunk1 = SSTORE2.write(part1);
+        htmlChunk2 = SSTORE2.write(part2);
+    }
+
+    /// @notice Returns the full SLOW dapp HTML reassembled from on-chain SSTORE2 chunks.
+    function html() public view returns (string memory) {
+        return string(bytes.concat(SSTORE2.read(htmlChunk1), SSTORE2.read(htmlChunk2)));
+    }
 
     // METADATA
 
@@ -135,6 +156,32 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
         }
     }
 
+    // PENDING TRANSFER ENUMERATION
+
+    function getOutboundTransfers(address user) public view returns (uint256[] memory) {
+        return _outboundTransfers[user].values();
+    }
+
+    function getInboundTransfers(address user) public view returns (uint256[] memory) {
+        return _inboundTransfers[user].values();
+    }
+
+    function outboundTransferCount(address user) public view returns (uint256) {
+        return _outboundTransfers[user].length();
+    }
+
+    function inboundTransferCount(address user) public view returns (uint256) {
+        return _inboundTransfers[user].length();
+    }
+
+    function outboundTransferAt(address user, uint256 index) public view returns (uint256) {
+        return _outboundTransfers[user].at(index);
+    }
+
+    function inboundTransferAt(address user, uint256 index) public view returns (uint256) {
+        return _inboundTransfers[user].at(index);
+    }
+
     // GUARDIAN AUTH
 
     function setGuardian(address guardian) public {
@@ -160,14 +207,16 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
 
     // BALANCE MANAGEMENT
 
-    function unlock(uint256 transferId) public {
+    function unlock(uint256 transferId) public nonReentrant {
         unchecked {
             PendingTransfer storage pt = pendingTransfers[transferId];
             require(pt.timestamp != 0, TransferDoesNotExist());
             uint256 id = pt.id;
             require(block.timestamp > pt.timestamp + (id >> 160), TimelockNotExpired());
-            (uint256 amount, address to) = (pt.amount, pt.to); // Memoize optimization.
+            (uint256 amount, address from, address to) = (pt.amount, pt.from, pt.to);
             unlockedBalances[to][id] += amount;
+            _outboundTransfers[from].remove(transferId);
+            _inboundTransfers[to].remove(transferId);
             delete pendingTransfers[transferId];
             emit Unlocked(to, id, amount);
         }
@@ -182,8 +231,8 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
         returns (uint256 transferId)
     {
         if (msg.value != 0) {
+            require(token == address(0), InvalidDeposit());
             amount = msg.value;
-            delete token;
         } else {
             token.safeTransferFrom(msg.sender, address(this), amount);
         }
@@ -201,6 +250,9 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
 
                 pendingTransfers[transferId] =
                     PendingTransfer(uint96(block.timestamp), msg.sender, to, id, amount);
+
+                _outboundTransfers[msg.sender].add(transferId);
+                _inboundTransfers[to].add(transferId);
 
                 emit TransferPending(transferId, delay);
             } else {
@@ -266,6 +318,10 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
                 if (delay != 0) {
                     pendingTransfers[transferId] =
                         PendingTransfer(uint96(block.timestamp), from, to, id, amount);
+
+                    _outboundTransfers[from].add(transferId);
+                    _inboundTransfers[to].add(transferId);
+
                     emit TransferPending(transferId, delay);
                 } else {
                     unlockedBalances[to][id] += amount;
@@ -280,21 +336,28 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuard {
 
     // REVERSE
 
-    function reverse(uint256 transferId) public {
+    function reverse(uint256 transferId) public nonReentrant {
         unchecked {
             PendingTransfer storage pt = pendingTransfers[transferId];
 
+            require(pt.timestamp != 0, TransferDoesNotExist());
             require(block.timestamp <= pt.timestamp + (pt.id >> 160), TimelockExpired());
 
             if (msg.sender != pt.from) {
                 require(isApprovedForAll(pt.from, msg.sender), Unauthorized());
             }
 
-            unlockedBalances[pt.from][pt.id] += pt.amount;
+            (address from, address to, uint256 id, uint256 amount) =
+                (pt.from, pt.to, pt.id, pt.amount);
 
-            _safeTransfer(address(0), pt.to, pt.from, pt.id, pt.amount, "");
+            unlockedBalances[from][id] += amount;
+
+            _outboundTransfers[from].remove(transferId);
+            _inboundTransfers[to].remove(transferId);
 
             delete pendingTransfers[transferId];
+
+            _safeTransfer(address(0), to, from, id, amount, "");
         }
     }
 

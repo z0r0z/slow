@@ -13,11 +13,13 @@ remappings = [
 
 via_ir = true
 
+fs_permissions = [{ access = "read", path = "./frontend/index.html"}]
+
 [fmt]
 line_length = 100
 
 [rpc_endpoints]
-main = "https://rpc.ankr.com/eth"
+main = "https://ethereum-rpc.publicnode.com"
 base = "https://rpc.ankr.com/base"
 poly = "https://rpc.ankr.com/polygon"
 opti = "https://rpc.ankr.com/optimism"
