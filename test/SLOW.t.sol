@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 pragma solidity ^0.8.19;
 
-import {SLOW} from "../src/SLOW.sol";
+import {SLOW, SLOWGate} from "../src/SLOW.sol";
 import {Test, Vm} from "../lib/forge-std/src/Test.sol";
 import {console} from "forge-std/console.sol";
+import {Base64} from "@solady/src/utils/Base64.sol";
+import {LibString} from "@solady/src/utils/LibString.sol";
 
 contract SLOWTest is Test {
     SLOW internal slow;
@@ -26,6 +28,7 @@ contract SLOWTest is Test {
     );
     event GuardianSet(address indexed user, address indexed guardian);
     event TransferPending(uint256 indexed transferId, uint96 indexed delay);
+    event TransferReversed(uint256 indexed transferId);
 
     function setUp() public payable {
         vm.createSelectFork(vm.rpcUrl("main")); // Ethereum mainnet fork.
@@ -343,42 +346,165 @@ contract SLOWTest is Test {
         vm.stopPrank();
     }
 
-    // Test removing guardian
+    // Removal now goes through propose + delay + commit; current guardian can veto.
     function testRemoveGuardian() public {
-        // First set a guardian
         vm.prank(user1);
         slow.setGuardian(guardian);
 
-        // Wait for cooldown
-        vm.warp(block.timestamp + 1 days + 1);
+        // Propose removal — does not take effect immediately.
+        vm.prank(user1);
+        slow.setGuardian(address(0));
+        assertEq(slow.guardians(user1), guardian, "guardian still active during delay");
 
-        // Remove the guardian
+        // Commit before delay reverts.
+        vm.expectRevert(SLOW.GuardianChangeNotReady.selector);
+        slow.commitGuardian(user1);
+
+        // After delay, anyone can commit.
+        vm.warp(block.timestamp + 1 days);
+        slow.commitGuardian(user1);
+        assertEq(slow.guardians(user1), address(0), "guardian removed post-commit");
+    }
+
+    // Active guardian → rotation must wait the delay; current guardian can veto.
+    function testGuardianChangeDelay() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        // Propose rotation — staged, not active.
+        address newGuardian = address(0x4);
+        vm.prank(user1);
+        slow.setGuardian(newGuardian);
+        assertEq(slow.guardians(user1), guardian, "old guardian still active");
+        (address pending, uint96 effectiveAt) = slow.pendingGuardian(user1);
+        assertEq(pending, newGuardian);
+        assertEq(uint256(effectiveAt), block.timestamp + 1 days);
+
+        // Commit before delay reverts.
+        vm.expectRevert(SLOW.GuardianChangeNotReady.selector);
+        slow.commitGuardian(user1);
+
+        // After delay, commit succeeds and rotation lands.
+        vm.warp(block.timestamp + 1 days);
+        slow.commitGuardian(user1);
+        assertEq(slow.guardians(user1), newGuardian);
+        (pending, effectiveAt) = slow.pendingGuardian(user1);
+        assertEq(pending, address(0));
+        assertEq(uint256(effectiveAt), 0);
+    }
+
+    // The whole point of H-01: a compromised key cannot rotate the guardian
+    // before the live guardian has a chance to veto.
+    function testGuardianVetosRotationByCompromisedKey() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        // Compromised key proposes removal.
         vm.prank(user1);
         slow.setGuardian(address(0));
 
-        // Verify guardian is removed
+        // Live guardian vetoes inside the window.
+        vm.prank(guardian);
+        slow.cancelGuardianChange(user1);
+
+        // Pending cleared, original guardian still in force.
+        (address pending,) = slow.pendingGuardian(user1);
+        assertEq(pending, address(0));
+        assertEq(slow.guardians(user1), guardian);
+
+        // Even after the would-be delay window, no commit is possible.
+        vm.warp(block.timestamp + 1 days + 1);
+        vm.expectRevert(SLOW.NoGuardianChangePending.selector);
+        slow.commitGuardian(user1);
+    }
+
+    function testUserCanCancelOwnGuardianChange() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        vm.prank(user1);
+        slow.setGuardian(address(0xBEEF));
+
+        vm.prank(user1);
+        slow.cancelGuardianChange(user1);
+
+        assertEq(slow.guardians(user1), guardian, "rotation aborted by user");
+    }
+
+    function testCancelGuardianChangeUnauthorizedReverts() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        vm.prank(user1);
+        slow.setGuardian(address(0xBEEF));
+
+        // Random third party (not user, not guardian) cannot cancel.
+        vm.prank(address(0xDEAD));
+        vm.expectRevert(SLOW.Unauthorized.selector);
+        slow.cancelGuardianChange(user1);
+    }
+
+    function testCancelWhenNoChangePendingReverts() public {
+        vm.expectRevert(SLOW.NoGuardianChangePending.selector);
+        slow.cancelGuardianChange(user1);
+    }
+
+    // After the delay expires, the cancel window closes. Only commit is valid,
+    // so a hostile guardian cannot perpetually race a user's legitimate commit.
+    function testCancelAfterDelayReverts() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        vm.prank(user1);
+        slow.setGuardian(address(0));
+
+        vm.warp(block.timestamp + 1 days);
+
+        vm.prank(guardian);
+        vm.expectRevert(SLOW.GuardianChangeNotReady.selector);
+        slow.cancelGuardianChange(user1);
+
+        vm.prank(user1);
+        vm.expectRevert(SLOW.GuardianChangeNotReady.selector);
+        slow.cancelGuardianChange(user1);
+
+        // Commit still works, as expected.
+        slow.commitGuardian(user1);
         assertEq(slow.guardians(user1), address(0));
     }
 
-    // Test guardian cooldown
-    function testGuardianCooldown() public {
-        vm.startPrank(user1);
-
-        // Set guardian first time
+    function testReProposingOverwritesPriorChange() public {
+        vm.prank(user1);
         slow.setGuardian(guardian);
 
-        // Try to change guardian immediately - should fail
-        vm.expectRevert(SLOW.GuardianCooldownNotElapsed.selector);
-        slow.setGuardian(address(0x4));
+        vm.prank(user1);
+        slow.setGuardian(address(0xAAAA));
 
-        // Advance time past cooldown
-        vm.warp(block.timestamp + 1 days + 1);
+        // Re-propose with a different target — overwrites pending, resets timer.
+        vm.warp(block.timestamp + 12 hours);
+        vm.prank(user1);
+        slow.setGuardian(address(0xBBBB));
 
-        // Now should succeed
-        slow.setGuardian(address(0x4));
-        assertEq(slow.guardians(user1), address(0x4));
+        (address pending, uint96 effectiveAt) = slow.pendingGuardian(user1);
+        assertEq(pending, address(0xBBBB));
+        assertEq(uint256(effectiveAt), block.timestamp + 1 days);
+    }
 
-        vm.stopPrank();
+    // Once removed (committed), setting a new guardian is immediate again.
+    function testSetGuardianImmediateAfterRemoval() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        vm.prank(user1);
+        slow.setGuardian(address(0));
+        vm.warp(block.timestamp + 1 days);
+        slow.commitGuardian(user1);
+        assertEq(slow.guardians(user1), address(0));
+
+        // Now no active guardian → next set is immediate, no commit needed.
+        vm.prank(user1);
+        slow.setGuardian(address(0xC0FFEE));
+        assertEq(slow.guardians(user1), address(0xC0FFEE));
     }
 
     // Test guardian approval flow for transfers
@@ -392,10 +518,9 @@ contract SLOWTest is Test {
 
         uint256 id = calculateId(address(0), 0); // Zero delay ID
 
-        // Calculate the expected transferId - need to get nonce first
-        uint256 currentNonce = slow.nonces(user1);
-        uint256 transferId =
-            uint256(keccak256(abi.encodePacked(user1, user2, id, AMOUNT, currentNonce)));
+        // Use predictTransferId so the preimage stays in sync with the contract
+        // (which mixes in lastGuardianChange to invalidate stale approvals).
+        uint256 transferId = slow.predictTransferId(user1, user2, id, AMOUNT);
 
         // Try to transfer without guardian approval - should fail
         vm.startPrank(user1);
@@ -414,6 +539,49 @@ contract SLOWTest is Test {
 
         // Check balances after transfer
         assertEq(slow.balanceOf(user1, id), 0);
+        assertEq(slow.balanceOf(user2, id), AMOUNT);
+    }
+
+    // Rotating the guardian must invalidate any dangling approvals from the
+    // previous guardian. The preimage is bound to lastGuardianChange so that
+    // a setGuardian call atomically retires every prior approval.
+    function testGuardianRotationInvalidatesStaleApproval() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        vm.prank(user1);
+        slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, "");
+
+        uint256 id = calculateId(address(0), 0);
+
+        uint256 staleTransferId = slow.predictTransferId(user1, user2, id, AMOUNT);
+        vm.prank(guardian);
+        slow.approveTransfer(user1, staleTransferId);
+
+        // Rotate guardian via propose + commit.
+        address newGuardian = address(0xC0DEC0DE);
+        vm.prank(user1);
+        slow.setGuardian(newGuardian);
+        vm.warp(block.timestamp + 1 days);
+        slow.commitGuardian(user1);
+
+        // The stale approval no longer matches the now-current preimage.
+        assertTrue(slow.guardianApproved(staleTransferId));
+        uint256 freshTransferId = slow.predictTransferId(user1, user2, id, AMOUNT);
+        assertTrue(freshTransferId != staleTransferId);
+
+        // Transfer attempt must require the new guardian's approval.
+        vm.startPrank(user1);
+        vm.expectRevert(SLOW.GuardianApprovalRequired.selector);
+        slow.safeTransferFrom(user1, user2, id, AMOUNT, "");
+        vm.stopPrank();
+
+        vm.prank(newGuardian);
+        slow.approveTransfer(user1, freshTransferId);
+
+        vm.prank(user1);
+        slow.safeTransferFrom(user1, user2, id, AMOUNT, "");
+
         assertEq(slow.balanceOf(user2, id), AMOUNT);
     }
 
@@ -500,12 +668,9 @@ contract SLOWTest is Test {
 
         uint256 id = calculateId(address(0), 0);
 
-        // Get current nonce
-        uint256 currentNonce = slow.nonces(user1);
-
-        // Calculate the transferId that will be used on withdrawal
-        uint256 withdrawalTransferId =
-            uint256(keccak256(abi.encodePacked(user1, user2, id, AMOUNT, currentNonce)));
+        // Use predictWithdrawalId so the preimage stays in sync with the contract
+        // (which mixes in lastGuardianChange to invalidate stale approvals).
+        uint256 withdrawalTransferId = slow.predictWithdrawalId(user1, user2, id, AMOUNT);
 
         // Try to withdraw without guardian approval - should fail
         vm.startPrank(user1);
@@ -583,7 +748,7 @@ contract SLOWTest is Test {
         amounts[0] = AMOUNT;
 
         // Batch transfer should revert
-        vm.expectRevert(SLOW.Unauthorized.selector);
+        vm.expectRevert(SLOW.BatchTransferDisabled.selector);
         slow.safeBatchTransferFrom(user1, user2, ids, amounts, "");
         vm.stopPrank();
     }
@@ -736,6 +901,7 @@ contract SLOWTest is Test {
         uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
 
         vm.warp(block.timestamp + DELAY + 1);
+        vm.prank(user2);
         slow.unlock(transferId);
 
         vm.prank(user1);
@@ -797,6 +963,7 @@ contract SLOWTest is Test {
         uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
 
         vm.warp(block.timestamp + DELAY + 1);
+        vm.prank(user2);
         slow.unlock(transferId);
 
         assertEq(slow.outboundTransferCount(user1), 0);
@@ -831,7 +998,9 @@ contract SLOWTest is Test {
 
         uint256[] memory out = slow.getOutboundTransfers(user1);
         // Set semantics: ordering is implementation-defined, so check membership.
-        bool hasT1; bool hasT2; bool hasT3;
+        bool hasT1;
+        bool hasT2;
+        bool hasT3;
         for (uint256 i = 0; i < out.length; i++) {
             if (out[i] == t1) hasT1 = true;
             else if (out[i] == t2) hasT2 = true;
@@ -860,6 +1029,7 @@ contract SLOWTest is Test {
         vm.prank(user1);
         uint256 depositId = slow.depositTo{value: AMOUNT}(address(0), user1, 0, DELAY, "");
         vm.warp(block.timestamp + DELAY + 1);
+        vm.prank(user1);
         slow.unlock(depositId);
 
         uint256 id = calculateId(address(0), DELAY);
@@ -893,10 +1063,10 @@ contract SLOWTest is Test {
         assertEq(bytes(dapp.html()).length, 0);
     }
 
-    // Real production deployment: split the actual frontend/index.html file in half
+    // Real production deployment: split the actual SLOW.html file in half
     // and verify it survives the SSTORE2 roundtrip byte-identical.
     function testHtmlFromIndexHtml() public {
-        bytes memory full = vm.readFileBinary("frontend/index.html");
+        bytes memory full = vm.readFileBinary("SLOW.html");
         uint256 mid = full.length / 2 + (full.length & 1);
         bytes memory part1 = _slice(full, 0, mid);
         bytes memory part2 = _slice(full, mid, full.length - mid);
@@ -939,6 +1109,1849 @@ contract SLOWTest is Test {
 
         (uint96 ts,,,,) = slow.pendingTransfers(transferId);
         assertEq(ts, 0);
+    }
+
+    // METADATA
+
+    function testNameAndSymbol() public view {
+        assertEq(slow.name(), "SLOW");
+        assertEq(slow.symbol(), "SLOW");
+    }
+
+    // INPUT VALIDATION
+
+    function testDepositInvalidInputs() public {
+        vm.startPrank(user1);
+
+        // ETH branch: token != 0 with msg.value
+        vm.expectRevert(SLOW.InvalidDeposit.selector);
+        slow.depositTo{value: AMOUNT}(USDC, user2, 0, DELAY, "");
+
+        // ETH branch: amount must be 0 (strict, calldata-cheap convention)
+        vm.expectRevert(SLOW.InvalidDeposit.selector);
+        slow.depositTo{value: AMOUNT}(address(0), user2, AMOUNT, DELAY, "");
+
+        // Non-ETH branch: token == 0 with no msg.value (closes the silent-success hole)
+        vm.expectRevert(SLOW.InvalidDeposit.selector);
+        slow.depositTo(address(0), user2, AMOUNT, DELAY, "");
+
+        // Non-ETH branch: zero-amount ERC20 deposit
+        vm.expectRevert(SLOW.InvalidDeposit.selector);
+        slow.depositTo(address(token), user2, 0, DELAY, "");
+
+        vm.stopPrank();
+    }
+
+    function testZeroAmountTransferReverts() public {
+        uint256 id = calculateId(address(0), DELAY);
+
+        vm.prank(user1);
+        vm.expectRevert(SLOW.InvalidAmount.selector);
+        slow.safeTransferFrom(user1, user2, id, 0, "");
+    }
+
+    // Without the InvalidAmount guard, an attacker with no balance could
+    // grow a victim's _inboundTransfers set with zero-value pending entries.
+    function testZeroAmountTransferCannotSpamInboundSet() public {
+        address attacker = address(0xBAD);
+        uint256 id = calculateId(address(0), DELAY);
+
+        uint256 inboundBefore = slow.inboundTransferCount(user2);
+
+        vm.prank(attacker);
+        vm.expectRevert(SLOW.InvalidAmount.selector);
+        slow.safeTransferFrom(attacker, user2, id, 0, "");
+
+        assertEq(slow.inboundTransferCount(user2), inboundBefore);
+    }
+
+    function testWithdrawToZeroAddressReverts() public {
+        // Deposit with zero delay so user1 holds an unlocked balance.
+        vm.prank(user1);
+        slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, "");
+
+        uint256 id = calculateId(address(0), 0);
+
+        vm.prank(user1);
+        vm.expectRevert(SLOW.InvalidRecipient.selector);
+        slow.withdrawFrom(user1, address(0), id, AMOUNT);
+    }
+
+    // TIMELOCK BOUNDARY (>= unlock, < reverse)
+
+    function testUnlockNonexistent() public {
+        vm.expectRevert(SLOW.TransferDoesNotExist.selector);
+        slow.unlock(0xdeadbeef);
+    }
+
+    // claim() — auto-settle path: burns the wrapped 1155 from the recipient and pays out
+    // the raw underlying directly. Permissioned by the ERC1155 operator pattern so a
+    // recipient holding wrapped form on purpose (e.g., a multisig with a 1-day-only policy)
+    // cannot be force-unwrapped by a third-party keeper.
+
+    function testClaimByHolder() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+        uint256 id = calculateId(address(0), DELAY);
+
+        // Wrapped 1155 was minted to recipient at deposit time.
+        assertEq(slow.balanceOf(user2, id), AMOUNT, "wrapper minted to recipient");
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        uint256 balanceBefore = user2.balance;
+        vm.prank(user2);
+        slow.claim(transferId);
+
+        assertEq(user2.balance, balanceBefore + AMOUNT, "underlying ETH paid to recipient");
+        assertEq(slow.balanceOf(user2, id), 0, "wrapper burned");
+
+        (uint96 ts,,,,) = slow.pendingTransfers(transferId);
+        assertEq(ts, 0, "pending entry cleared");
+    }
+
+    function testClaimByOperator() public {
+        address keeper = address(0xCAFE);
+        vm.deal(keeper, 1 ether);
+
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        // Recipient opts into auto-settle by approving the keeper as ERC1155 operator.
+        vm.prank(user2);
+        slow.setApprovalForAll(keeper, true);
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        uint256 user2Before = user2.balance;
+        uint256 keeperBefore = keeper.balance;
+
+        vm.prank(keeper);
+        slow.claim(transferId);
+
+        assertEq(user2.balance, user2Before + AMOUNT, "ETH always goes to recipient");
+        assertEq(keeper.balance, keeperBefore, "keeper does not receive funds");
+    }
+
+    function testClaimUnauthorizedReverts() public {
+        address attacker = address(0xBAD);
+
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        vm.prank(attacker);
+        vm.expectRevert(SLOW.Unauthorized.selector);
+        slow.claim(transferId);
+    }
+
+    function testClaimBeforeExpiryReverts() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.prank(user2);
+        vm.expectRevert(SLOW.TimelockNotExpired.selector);
+        slow.claim(transferId);
+    }
+
+    function testClaimNonexistentReverts() public {
+        vm.expectRevert(SLOW.TransferDoesNotExist.selector);
+        slow.claim(0xdeadbeef);
+    }
+
+    // Guardian on `pt.to` blocks claim's raw-payout path, forcing the unlock +
+    // withdrawFrom flow where guardian gates the eventual raw exit.
+    function testClaimRevertsWhenRecipientHasGuardian() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.prank(user2);
+        slow.setGuardian(guardian);
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        vm.prank(user2);
+        vm.expectRevert(SLOW.ClaimBlockedByGuardian.selector);
+        slow.claim(transferId);
+    }
+
+    // Guardian-mode recipient still settles via unlock + guardian-approved withdrawFrom.
+    function testGuardianRecipientSettlesViaUnlockPath() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.prank(user2);
+        slow.setGuardian(guardian);
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        // Recipient (or recipient-approved operator) can unlock; third parties cannot.
+        vm.prank(user2);
+        slow.unlock(transferId);
+
+        uint256 id = calculateId(address(0), DELAY);
+        assertEq(slow.unlockedBalances(user2, id), AMOUNT, "unlock credited recipient");
+
+        // Bare withdrawFrom blocked without guardian approval.
+        vm.prank(user2);
+        vm.expectRevert(SLOW.GuardianApprovalRequired.selector);
+        slow.withdrawFrom(user2, user2, id, AMOUNT);
+
+        // Guardian approves the self-withdraw transferId, then withdrawFrom succeeds.
+        uint256 withdrawTransferId = slow.predictWithdrawalId(user2, user2, id, AMOUNT);
+        vm.prank(guardian);
+        slow.approveTransfer(user2, withdrawTransferId);
+
+        uint256 user2Before = user2.balance;
+        vm.prank(user2);
+        slow.withdrawFrom(user2, user2, id, AMOUNT);
+        assertEq(user2.balance, user2Before + AMOUNT, "raw exit gated by guardian succeeds");
+    }
+
+    // Clawback returns wrapper to a guardian-mode sender; raw exit is then guardian-gated.
+    function testClawbackPreservesGuardianOnSender() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        vm.warp(block.timestamp + DELAY + 30 days + 1);
+
+        uint256 id = calculateId(address(0), DELAY);
+
+        vm.prank(user1);
+        slow.clawback(transferId);
+
+        // Wrapper is back at sender, but raw exit blocked by guardian.
+        assertEq(slow.balanceOf(user1, id), AMOUNT, "wrapper at sender");
+        vm.prank(user1);
+        vm.expectRevert(SLOW.GuardianApprovalRequired.selector);
+        slow.withdrawFrom(user1, user1, id, AMOUNT);
+    }
+
+    function testClaimERC20() public {
+        vm.startPrank(user1);
+        token.approve(address(slow), AMOUNT);
+        uint256 transferId = slow.depositTo(address(token), user2, AMOUNT, DELAY, "");
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        uint256 user2Before = token.balanceOf(user2);
+        vm.prank(user2);
+        slow.claim(transferId);
+
+        assertEq(token.balanceOf(user2), user2Before + AMOUNT, "ERC20 underlying paid to recipient");
+    }
+
+    function testClaimAfterReverseReverts() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        // Reverse before expiry; pending entry is deleted.
+        vm.prank(user1);
+        slow.reverse(transferId);
+
+        vm.warp(block.timestamp + DELAY + 1);
+        vm.prank(user2);
+        vm.expectRevert(SLOW.TransferDoesNotExist.selector);
+        slow.claim(transferId);
+    }
+
+    function testClaimAfterUnlockReverts() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.warp(block.timestamp + DELAY + 1);
+        vm.prank(user2);
+        slow.unlock(transferId); // recipient settles via unlock; deletes pending
+
+        vm.prank(user2);
+        vm.expectRevert(SLOW.TransferDoesNotExist.selector);
+        slow.claim(transferId);
+    }
+
+    function testClaimUpdatesEnumeration() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        // Pre-claim: both sender's outbound and recipient's inbound list this transfer.
+        assertEq(slow.outboundTransferCount(user1), 1);
+        assertEq(slow.inboundTransferCount(user2), 1);
+        assertEq(slow.outboundTransferAt(user1, 0), transferId);
+        assertEq(slow.inboundTransferAt(user2, 0), transferId);
+
+        vm.warp(block.timestamp + DELAY + 1);
+        vm.prank(user2);
+        slow.claim(transferId);
+
+        // Post-claim: enumeration sets are empty for both parties.
+        assertEq(slow.outboundTransferCount(user1), 0);
+        assertEq(slow.inboundTransferCount(user2), 0);
+    }
+
+    // The ETH payout in claim() is the only external call. A malicious recipient that
+    // re-enters via its receive() must be rejected by the nonReentrant guard.
+    function testClaimReentrancyBlocked() public {
+        ReentrantClaimReceiver malicious = new ReentrantClaimReceiver{value: AMOUNT}(slow);
+        uint256 transferId = malicious.deposit(DELAY);
+
+        vm.warp(block.timestamp + DELAY + 1);
+        malicious.callClaim(transferId);
+
+        assertTrue(malicious.reentryRejected(), "reentry should be rejected");
+    }
+
+    event TransferClaimed(uint256 indexed transferId);
+
+    function testClaimEmitsEvent() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+        vm.warp(block.timestamp + DELAY + 1);
+
+        vm.expectEmit(true, false, false, false, address(slow));
+        emit TransferClaimed(transferId);
+
+        vm.prank(user2);
+        slow.claim(transferId);
+    }
+
+    // clawback() — sender recovery after `delay + 30 days` of inactivity. Catches
+    // transfers whose pending entry still exists (no one called unlock/claim during grace).
+
+    function testClawbackByFrom() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        // Past timelock + full grace period.
+        vm.warp(block.timestamp + DELAY + 30 days + 1);
+
+        uint256 id = calculateId(address(0), DELAY);
+
+        vm.prank(user1);
+        slow.clawback(transferId);
+
+        // Wrapper-route: sender now holds the wrapper with credited unlocked balance.
+        assertEq(slow.balanceOf(user1, id), AMOUNT, "wrapper returned to sender");
+        assertEq(slow.balanceOf(user2, id), 0, "wrapper removed from recipient");
+        assertEq(slow.unlockedBalances(user1, id), AMOUNT, "unlocked balance credited");
+
+        (uint96 ts,,,,) = slow.pendingTransfers(transferId);
+        assertEq(ts, 0, "pending entry cleared");
+
+        // Compose with withdrawFrom for raw exit.
+        uint256 user1Before = user1.balance;
+        vm.prank(user1);
+        slow.withdrawFrom(user1, user1, id, AMOUNT);
+        assertEq(user1.balance, user1Before + AMOUNT, "underlying ETH returned to sender");
+        assertEq(slow.balanceOf(user1, id), 0, "wrapper burned on withdraw");
+    }
+
+    function testClawbackByOperator() public {
+        address operator = address(0x4);
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        // Sender authorizes an operator to act on their behalf.
+        vm.prank(user1);
+        slow.setApprovalForAll(operator, true);
+
+        vm.warp(block.timestamp + DELAY + 30 days + 1);
+
+        uint256 id = calculateId(address(0), DELAY);
+
+        vm.prank(operator);
+        slow.clawback(transferId);
+
+        // Operator triggers clawback; wrapper lands at sender, raw exit still gated.
+        assertEq(slow.balanceOf(user1, id), AMOUNT, "wrapper at sender");
+        assertEq(slow.unlockedBalances(user1, id), AMOUNT, "unlocked balance credited");
+
+        // Operator can also drive the withdrawFrom step (operator approval extends to
+        // ERC1155 burn auth).
+        uint256 user1Before = user1.balance;
+        vm.prank(operator);
+        slow.withdrawFrom(user1, user1, id, AMOUNT);
+        assertEq(user1.balance, user1Before + AMOUNT, "ETH always returned to sender");
+    }
+
+    function testClawbackUnauthorizedReverts() public {
+        address attacker = address(0xBAD);
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.warp(block.timestamp + DELAY + 30 days + 1);
+
+        vm.prank(attacker);
+        vm.expectRevert(SLOW.Unauthorized.selector);
+        slow.clawback(transferId);
+    }
+
+    function testClawbackBeforeGraceReverts() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        // During timelock window — too early.
+        vm.prank(user1);
+        vm.expectRevert(SLOW.ClawbackNotReady.selector);
+        slow.clawback(transferId);
+
+        // Past timelock but before full grace — still too early.
+        vm.warp(block.timestamp + DELAY + 30 days - 1);
+        vm.prank(user1);
+        vm.expectRevert(SLOW.ClawbackNotReady.selector);
+        slow.clawback(transferId);
+    }
+
+    function testClawbackAfterUnlockReverts() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        // Recipient unlocks during grace; pending is deleted, settlement is finalized.
+        vm.warp(block.timestamp + DELAY + 1);
+        vm.prank(user2);
+        slow.unlock(transferId);
+
+        // Even after grace, sender cannot clawback — pending is gone.
+        vm.warp(block.timestamp + 30 days);
+        vm.prank(user1);
+        vm.expectRevert(SLOW.TransferDoesNotExist.selector);
+        slow.clawback(transferId);
+    }
+
+    function testClawbackERC20() public {
+        vm.startPrank(user1);
+        token.approve(address(slow), AMOUNT);
+        uint256 transferId = slow.depositTo(address(token), user2, AMOUNT, DELAY, "");
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + DELAY + 30 days + 1);
+
+        uint256 id = calculateId(address(token), DELAY);
+        uint256 user1Before = token.balanceOf(user1);
+
+        // Clawback returns wrapper; withdrawFrom converts to raw underlying.
+        vm.startPrank(user1);
+        slow.clawback(transferId);
+        slow.withdrawFrom(user1, user1, id, AMOUNT);
+        vm.stopPrank();
+
+        assertEq(
+            token.balanceOf(user1), user1Before + AMOUNT, "ERC20 underlying returned to sender"
+        );
+    }
+
+    function testTimelockBoundary() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+        (uint96 ts,,, uint256 id,) = slow.pendingTransfers(transferId);
+        uint256 expiry = uint256(ts) + (id >> 160);
+
+        // One second before: unlock REVERTS, reverse OK
+        vm.warp(expiry - 1);
+        vm.expectRevert(SLOW.TimelockNotExpired.selector);
+        slow.unlock(transferId);
+
+        // Exactly at expiry: reverse REVERTS, unlock OK
+        vm.warp(expiry);
+        vm.prank(user1);
+        vm.expectRevert(SLOW.TimelockExpired.selector);
+        slow.reverse(transferId);
+
+        vm.prank(user2);
+        slow.unlock(transferId);
+        assertEq(slow.unlockedBalances(user2, id), AMOUNT);
+    }
+
+    // VIEWERS
+
+    function testCanReverseTransferStates() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        (bool canReverse, bytes4 reason) = slow.canReverseTransfer(transferId);
+        assertTrue(canReverse);
+        assertEq(reason, bytes4(0));
+
+        (canReverse, reason) = slow.canReverseTransfer(0xdeadbeef);
+        assertFalse(canReverse);
+        assertEq(reason, SLOW.TransferDoesNotExist.selector);
+
+        vm.warp(block.timestamp + DELAY);
+        (canReverse, reason) = slow.canReverseTransfer(transferId);
+        assertFalse(canReverse);
+        assertEq(reason, SLOW.TimelockExpired.selector);
+    }
+
+    function testGuardianViews() public {
+        // Fresh user has no active guardian → next set is immediate.
+        assertTrue(slow.isGuardianChangeImmediate(user1));
+
+        // No guardian set → approval never needed.
+        assertFalse(slow.isGuardianApprovalNeeded(user1, user2, 0, AMOUNT));
+
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        // Now approval is needed for the matching params.
+        uint256 id = calculateId(address(0), 0);
+        assertTrue(slow.isGuardianApprovalNeeded(user1, user2, id, AMOUNT));
+
+        // With an active guardian, further changes are no longer immediate.
+        assertFalse(slow.isGuardianChangeImmediate(user1));
+
+        // Once guardian approves the predicted transferId, the view flips.
+        uint256 expected = slow.predictTransferId(user1, user2, id, AMOUNT);
+        vm.prank(guardian);
+        slow.approveTransfer(user1, expected);
+        assertFalse(slow.isGuardianApprovalNeeded(user1, user2, id, AMOUNT));
+    }
+
+    function testPredictTransferIdMatches() public {
+        uint256 id = calculateId(address(0), DELAY);
+        uint256 predicted = slow.predictTransferId(user1, user2, id, AMOUNT);
+
+        vm.prank(user1);
+        uint256 actual = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        assertEq(predicted, actual);
+    }
+
+    function testEncodeDecodeIdRoundtrip() public view {
+        address[3] memory toks = [address(0), USDC, address(0xCAFE)];
+        uint96[3] memory delays = [uint96(0), uint96(3600), type(uint96).max];
+        for (uint256 i = 0; i < toks.length; i++) {
+            for (uint256 j = 0; j < delays.length; j++) {
+                uint256 id = slow.encodeId(toks[i], delays[j]);
+                (address t, uint256 d) = slow.decodeId(id);
+                assertEq(t, toks[i]);
+                assertEq(d, delays[j]);
+            }
+        }
+    }
+
+    // MULTICALL — the dapp's actual settlement flows
+
+    function testMulticallClaim() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.warp(block.timestamp + DELAY);
+
+        uint256 id = calculateId(address(0), DELAY);
+        bytes[] memory calls = new bytes[](2);
+        calls[0] = abi.encodeCall(slow.unlock, (transferId));
+        calls[1] = abi.encodeCall(slow.withdrawFrom, (user2, user2, id, AMOUNT));
+
+        uint256 balBefore = user2.balance;
+        vm.prank(user2);
+        slow.multicall(calls);
+
+        assertEq(user2.balance, balBefore + AMOUNT);
+        assertEq(slow.balanceOf(user2, id), 0);
+        (uint96 ts,,,,) = slow.pendingTransfers(transferId);
+        assertEq(ts, 0);
+    }
+
+    function testMulticallReclaim() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        uint256 id = calculateId(address(0), DELAY);
+        bytes[] memory calls = new bytes[](2);
+        calls[0] = abi.encodeCall(slow.reverse, (transferId));
+        calls[1] = abi.encodeCall(slow.withdrawFrom, (user1, user1, id, AMOUNT));
+
+        uint256 balBefore = user1.balance;
+        vm.prank(user1);
+        slow.multicall(calls);
+
+        assertEq(user1.balance, balBefore + AMOUNT);
+        assertEq(slow.balanceOf(user1, id), 0);
+        (uint96 ts,,,,) = slow.pendingTransfers(transferId);
+        assertEq(ts, 0);
+    }
+
+    function testMulticallRejectsValue() public {
+        bytes[] memory calls = new bytes[](0);
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        vm.expectRevert();
+        slow.multicall{value: 1 ether}(calls);
+    }
+
+    // CONSTRUCTOR REGISTRATION
+
+    function testHtmlRegistryRegisteredOnDeploy() public {
+        address REGISTRY = 0xFa11bacCdc38022dbf8795cC94333304C9f22722;
+        MockHtmlRegistry tpl = new MockHtmlRegistry();
+        vm.etch(REGISTRY, address(tpl).code);
+
+        bytes memory part1 = bytes("<html>");
+        bytes memory part2 = bytes("</html>");
+        SLOW newSlow = new SLOW(part1, part2);
+
+        assertEq(MockHtmlRegistry(REGISTRY).lastTarget(), address(newSlow));
+        assertEq(
+            keccak256(bytes(MockHtmlRegistry(REGISTRY).lastHtml())),
+            keccak256(bytes.concat(part1, part2))
+        );
+    }
+
+    function testReverseEmitsEvent() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.expectEmit(true, false, false, false, address(slow));
+        emit TransferReversed(transferId);
+
+        vm.prank(user1);
+        slow.reverse(transferId);
+    }
+
+    function testUriIncludesAttributesAndPerIdName() public view {
+        uint256 id = calculateId(USDC, 1 days);
+        string memory u = slow.uri(id);
+
+        bytes memory uriBytes = bytes(u);
+        bytes memory prefix = bytes("data:application/json;base64,");
+        bytes memory payload = new bytes(uriBytes.length - prefix.length);
+        for (uint256 i = 0; i < payload.length; i++) {
+            payload[i] = uriBytes[prefix.length + i];
+        }
+        string memory json = string(Base64.decode(string(payload)));
+
+        // Per-id name disambiguates listings (e.g., "SLOW USDC · 1 day")
+        assertTrue(LibString.contains(json, '"name":"SLOW USDC'), "per-id name");
+        assertTrue(LibString.contains(json, "1 day"), "human-readable delay in name");
+
+        // Attributes array present with all four traits
+        assertTrue(LibString.contains(json, '"attributes":['));
+        assertTrue(LibString.contains(json, '"trait_type":"Asset"'));
+        assertTrue(LibString.contains(json, '"trait_type":"Token"'));
+        assertTrue(LibString.contains(json, '"trait_type":"Delay"'));
+        assertTrue(LibString.contains(json, '"trait_type":"Delay (seconds)"'));
+        assertTrue(LibString.contains(json, '"value":86400'));
+    }
+
+    // Token whose name() carries a JSON injection attempting to inject a fake image field.
+    function testUriEscapesMaliciousMetadata() public {
+        EvilToken evil = new EvilToken();
+        uint256 id = calculateId(address(evil), 0);
+        string memory u = slow.uri(id);
+
+        // Strip the "data:application/json;base64," prefix and decode.
+        bytes memory uriBytes = bytes(u);
+        bytes memory prefix = bytes("data:application/json;base64,");
+        bytes memory payload = new bytes(uriBytes.length - prefix.length);
+        for (uint256 i = 0; i < payload.length; i++) {
+            payload[i] = uriBytes[prefix.length + i];
+        }
+        string memory json = string(Base64.decode(string(payload)));
+
+        // Raw injection (closing description and opening a fake image field) must NOT survive.
+        assertFalse(
+            LibString.contains(json, '","image":"evil_image'), "raw JSON injection leaked through"
+        );
+        // The escapeJSON output must be present in the description.
+        assertTrue(
+            LibString.contains(json, '\\",\\"image\\":\\"evil_image'),
+            "name should be JSON-escaped in description"
+        );
+    }
+
+    // 65-byte name() ending in a 3-byte CJK char. Solady's readName(64) cuts at byte 64,
+    // leaving only 2 of the codepoint's 3 bytes in the buffer. _utf8Trim must drop the
+    // partial sequence so the JSON description is valid UTF-8 — no stray U+FFFD on
+    // strict marketplace parsers, no orphan lead byte (0xE4) anywhere in the payload.
+    function testUriTrimsPartialUtf8FromTruncatedName() public {
+        LongCjkTailToken t = new LongCjkTailToken();
+        uint256 id = calculateId(address(t), 0);
+        string memory u = slow.uri(id);
+
+        bytes memory uriBytes = bytes(u);
+        bytes memory prefix = bytes("data:application/json;base64,");
+        bytes memory payload = new bytes(uriBytes.length - prefix.length);
+        for (uint256 i = 0; i < payload.length; i++) {
+            payload[i] = uriBytes[prefix.length + i];
+        }
+        string memory json = string(Base64.decode(string(payload)));
+
+        // 62 ASCII 'A's appear cleanly between the literals; the 3-byte tail is gone.
+        assertTrue(
+            LibString.contains(
+                json,
+                "time-locked AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA (CJK) transfer."
+            ),
+            "partial UTF-8 from readName(64) leaked into description"
+        );
+
+        // No 0xE4 byte (lead for 三, U+4E09) should survive anywhere in the JSON.
+        bytes memory jb = bytes(json);
+        for (uint256 i = 0; i < jb.length; i++) {
+            assertTrue(uint8(jb[i]) != 0xE4, "stray UTF-8 lead byte in JSON");
+        }
+    }
+
+    // 64-byte name() ending with a complete 三 (3 bytes). readName(64) returns all 64
+    // bytes; _utf8Trim must walk back over the two continuation bytes, recognize the
+    // sequence is complete, and restore the byte count (no trim).
+    function testUriPreservesCompleteUtf8AtBoundary() public {
+        CompleteCjkTailToken t = new CompleteCjkTailToken();
+        uint256 id = calculateId(address(t), 0);
+        string memory u = slow.uri(id);
+
+        bytes memory uriBytes = bytes(u);
+        bytes memory prefix = bytes("data:application/json;base64,");
+        bytes memory payload = new bytes(uriBytes.length - prefix.length);
+        for (uint256 i = 0; i < payload.length; i++) {
+            payload[i] = uriBytes[prefix.length + i];
+        }
+        string memory json = string(Base64.decode(string(payload)));
+
+        // Full 61 'A's plus the complete 三 codepoint should appear in the description.
+        assertTrue(
+            LibString.contains(
+                json,
+                unicode"time-locked AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA三 (CCJK)"
+            ),
+            "complete UTF-8 sequence at byte boundary was incorrectly trimmed"
+        );
+    }
+
+    // 30-byte ASCII name() trips _clipForDisplay's 28-byte SVG cap. The JSON description
+    // must still carry the full name; only the SVG body row should be truncated with "...".
+    function testUriClipsLongNameInSvgWithEllipsis() public {
+        LongAsciiNameToken t = new LongAsciiNameToken();
+        uint256 id = calculateId(address(t), 1 days);
+        string memory u = slow.uri(id);
+
+        bytes memory uriBytes = bytes(u);
+        bytes memory prefix = bytes("data:application/json;base64,");
+        bytes memory payload = new bytes(uriBytes.length - prefix.length);
+        for (uint256 i = 0; i < payload.length; i++) {
+            payload[i] = uriBytes[prefix.length + i];
+        }
+        string memory json = string(Base64.decode(string(payload)));
+
+        // JSON description preserves the full 30-char name.
+        assertTrue(
+            LibString.contains(json, "time-locked AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA (LNT) transfer."),
+            "JSON description should keep full name"
+        );
+
+        // Decode the inner SVG (image is itself a base64 data URI).
+        bytes memory svgPrefix = bytes("data:image/svg+xml;base64,");
+        uint256 svgStart = LibString.indexOf(json, string(svgPrefix));
+        assertTrue(svgStart != LibString.NOT_FOUND, "no SVG in JSON");
+        svgStart += svgPrefix.length;
+        bytes memory jb = bytes(json);
+        uint256 svgEnd = svgStart;
+        while (svgEnd < jb.length && jb[svgEnd] != bytes1('"')) svgEnd++;
+        bytes memory svgB64 = new bytes(svgEnd - svgStart);
+        for (uint256 i = 0; i < svgB64.length; i++) {
+            svgB64[i] = jb[svgStart + i];
+        }
+        string memory svg = string(Base64.decode(string(svgB64)));
+
+        // SVG body row shows 28 A's followed by "..."; the full 30-A name must NOT appear.
+        assertTrue(
+            LibString.contains(svg, "AAAAAAAAAAAAAAAAAAAAAAAAAAAA..."),
+            "SVG body row should be clipped with ellipsis"
+        );
+        assertFalse(
+            LibString.contains(svg, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+            "full 30-char name should not appear in SVG"
+        );
+    }
+
+    // FUZZ + INVARIANT TESTS
+    //
+    // These exercise SLOW with randomized (amount, delay) inputs to catch state combinations
+    // that explicit per-case tests don't enumerate. Each test asserts a property that must
+    // hold for *every* legal input, not just the cases a human happened to write down.
+
+    /// Property: depositTo + warp(delay) + claim returns exactly `amount` to the recipient.
+    function testFuzz_RoundtripETHViaClaim(uint96 amount, uint96 delay) public {
+        amount = uint96(bound(amount, 1, 100 ether));
+        delay = uint96(bound(delay, 1, 365 days));
+
+        vm.deal(user1, amount);
+        uint256 senderBefore = user1.balance;
+        uint256 recipientBefore = user2.balance;
+
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: amount}(address(0), user2, 0, delay, "");
+
+        vm.warp(block.timestamp + delay);
+
+        vm.prank(user2);
+        slow.claim(transferId);
+
+        assertEq(user1.balance, senderBefore - amount, "sender debited exactly");
+        assertEq(user2.balance, recipientBefore + amount, "recipient credited exactly");
+
+        uint256 id = calculateId(address(0), delay);
+        assertEq(slow.balanceOf(user2, id), 0, "wrapped position burned");
+        (uint96 ts,,,,) = slow.pendingTransfers(transferId);
+        assertEq(ts, 0, "pending entry deleted");
+    }
+
+    /// Property: the dapp's two-step path (unlock + withdrawFrom) settles to the same result
+    /// as one-shot claim. Both steps are recipient-side.
+    function testFuzz_RoundtripETHViaUnlockWithdraw(uint96 amount, uint96 delay) public {
+        amount = uint96(bound(amount, 1, 100 ether));
+        delay = uint96(bound(delay, 1, 365 days));
+
+        vm.deal(user1, amount);
+        uint256 senderBefore = user1.balance;
+        uint256 recipientBefore = user2.balance;
+
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: amount}(address(0), user2, 0, delay, "");
+
+        vm.warp(block.timestamp + delay);
+        vm.prank(user2);
+        slow.unlock(transferId);
+
+        uint256 id = calculateId(address(0), delay);
+        vm.prank(user2);
+        slow.withdrawFrom(user2, user2, id, amount);
+
+        assertEq(user1.balance, senderBefore - amount);
+        assertEq(user2.balance, recipientBefore + amount);
+    }
+
+    /// Property: pre-expiry reverse + withdraw restores the sender exactly.
+    function testFuzz_RoundtripETHViaReverse(uint96 amount, uint96 delay) public {
+        amount = uint96(bound(amount, 1, 100 ether));
+        delay = uint96(bound(delay, 1, 365 days));
+
+        vm.deal(user1, amount);
+        uint256 senderBefore = user1.balance;
+
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: amount}(address(0), user2, 0, delay, "");
+
+        // Still inside the reverse window.
+        vm.prank(user1);
+        slow.reverse(transferId);
+
+        uint256 id = calculateId(address(0), delay);
+        vm.prank(user1);
+        slow.withdrawFrom(user1, user1, id, amount);
+
+        assertEq(user1.balance, senderBefore, "sender restored exactly");
+        assertEq(slow.balanceOf(user2, id), 0, "recipient holds nothing");
+    }
+
+    /// Property: post-grace clawback + withdrawFrom restores the sender exactly when the
+    /// recipient never claimed.
+    function testFuzz_RoundtripETHViaClawback(uint96 amount, uint96 delay) public {
+        amount = uint96(bound(amount, 1, 100 ether));
+        delay = uint96(bound(delay, 1, 365 days));
+
+        vm.deal(user1, amount);
+        uint256 senderBefore = user1.balance;
+
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: amount}(address(0), user2, 0, delay, "");
+
+        // Past expiry + 30-day grace window with the recipient never acting.
+        vm.warp(block.timestamp + delay + 30 days);
+
+        uint256 id = calculateId(address(0), delay);
+
+        vm.startPrank(user1);
+        slow.clawback(transferId);
+        slow.withdrawFrom(user1, user1, id, amount);
+        vm.stopPrank();
+
+        assertEq(user1.balance, senderBefore, "sender recovered exactly");
+        assertEq(slow.balanceOf(user2, id), 0, "wrapped position cleared from recipient");
+    }
+
+    /// Property: ERC20 round-trip via claim conserves token balance exactly.
+    function testFuzz_RoundtripERC20ViaClaim(uint96 amount, uint96 delay) public {
+        amount = uint96(bound(amount, 1, 100 ether));
+        delay = uint96(bound(delay, 1, 365 days));
+
+        token.mint(user1, amount);
+        uint256 senderBefore = token.balanceOf(user1);
+        uint256 recipientBefore = token.balanceOf(user2);
+
+        vm.startPrank(user1);
+        token.approve(address(slow), amount);
+        uint256 transferId = slow.depositTo(address(token), user2, amount, delay, "");
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + delay);
+
+        vm.prank(user2);
+        slow.claim(transferId);
+
+        assertEq(token.balanceOf(user1), senderBefore - amount, "sender debited exactly");
+        assertEq(token.balanceOf(user2), recipientBefore + amount, "recipient credited exactly");
+    }
+
+    /// Strict invariant: at any point in the lifecycle, for every (user, id):
+    ///     balanceOf[user][id] == unlockedBalances[user][id] + sum_of_inbound_pending_amounts(user, id)
+    /// We exercise it across deposit, partial unlock, transfer (re-locks), claim, reverse,
+    /// and clawback — i.e. every state-mutating path that touches balances or pendings.
+    function testFuzz_BalanceEqualsUnlockedPlusPending(uint96 a1, uint96 a2, uint96 delay) public {
+        a1 = uint96(bound(a1, 1, 50 ether));
+        a2 = uint96(bound(a2, 1, 50 ether));
+        delay = uint96(bound(delay, 1, 365 days));
+
+        uint256 id = calculateId(address(0), delay);
+        vm.deal(user1, uint256(a1) + uint256(a2));
+
+        // Step 1: two delayed deposits to user2.
+        vm.prank(user1);
+        uint256 t1 = slow.depositTo{value: a1}(address(0), user2, 0, delay, "");
+        _assertBalanceInvariant(user2, id);
+
+        vm.prank(user1);
+        uint256 t2 = slow.depositTo{value: a2}(address(0), user2, 0, delay, "");
+        _assertBalanceInvariant(user2, id);
+
+        // Step 2: expire and unlock just one of them.
+        vm.warp(block.timestamp + delay + 1);
+        vm.prank(user2);
+        slow.unlock(t1);
+        _assertBalanceInvariant(user2, id);
+
+        // Step 3: user2 transfers the unlocked half to a third party — re-locks for them.
+        address user3 = address(0x3);
+        vm.prank(user2);
+        slow.safeTransferFrom(user2, user3, id, a1, "");
+        _assertBalanceInvariant(user2, id);
+        _assertBalanceInvariant(user3, id);
+
+        // Step 4: claim the still-pending t2 directly — burns from user2.
+        vm.prank(user2);
+        slow.claim(t2);
+        _assertBalanceInvariant(user2, id);
+    }
+
+    function _assertBalanceInvariant(address user, uint256 id) internal view {
+        uint256 wrapped = slow.balanceOf(user, id);
+        uint256 unlocked = slow.unlockedBalances(user, id);
+
+        // Sum amounts of inbound pending entries that match this id.
+        uint256[] memory inbound = slow.getInboundTransfers(user);
+        uint256 pendingSum;
+        for (uint256 i; i < inbound.length; ++i) {
+            (,,, uint256 ptId, uint256 amount) = slow.pendingTransfers(inbound[i]);
+            if (ptId == id) pendingSum += amount;
+        }
+
+        assertEq(
+            wrapped,
+            unlocked + pendingSum,
+            "balanceOf must equal unlocked + inbound-pending across full lifecycle"
+        );
+    }
+
+    /// Invariant: post-deposit, ERC1155 balance == unlocked + pending amount (per recipient/id).
+    /// The pending entry holds the locked portion; balanceOf carries the wrapped total.
+    function testFuzz_AccountingInvariant(uint96 amount, uint96 delay) public {
+        amount = uint96(bound(amount, 1, 100 ether));
+        delay = uint96(bound(delay, 0, 365 days));
+
+        vm.deal(user1, amount);
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: amount}(address(0), user2, 0, delay, "");
+
+        uint256 id = calculateId(address(0), delay);
+        uint256 wrapped = slow.balanceOf(user2, id);
+        uint256 unlocked = slow.unlockedBalances(user2, id);
+
+        if (delay == 0) {
+            assertEq(wrapped, unlocked, "no-delay deposit fully unlocks");
+        } else {
+            assertEq(unlocked, 0, "delay deposit holds locked");
+            (,,,, uint256 pendingAmount) = slow.pendingTransfers(transferId);
+            assertEq(wrapped, pendingAmount, "wrapped == pending amount");
+            assertEq(wrapped, amount, "wrapped == deposited amount");
+        }
+    }
+
+    /// Invariant: contract's underlying ETH balance equals the sum of wrapped supply across
+    /// all recipients for that token's encoded id space.
+    function testFuzz_WrappedSupplyMatchesUnderlying(uint96 a1, uint96 a2, uint96 delay) public {
+        a1 = uint96(bound(a1, 1, 50 ether));
+        a2 = uint96(bound(a2, 1, 50 ether));
+        delay = uint96(bound(delay, 0, 365 days));
+
+        uint256 contractBefore = address(slow).balance;
+
+        vm.deal(user1, a1);
+        vm.prank(user1);
+        slow.depositTo{value: a1}(address(0), user2, 0, delay, "");
+
+        vm.deal(user2, a2);
+        vm.prank(user2);
+        slow.depositTo{value: a2}(address(0), user1, 0, delay, "");
+
+        uint256 id = calculateId(address(0), delay);
+        uint256 wrappedSupply = slow.balanceOf(user1, id) + slow.balanceOf(user2, id);
+        uint256 underlyingHeld = address(slow).balance - contractBefore;
+
+        assertEq(wrappedSupply, uint256(a1) + uint256(a2), "wrapped sum == deposit sum");
+        assertEq(wrappedSupply, underlyingHeld, "wrapped supply == underlying held");
+    }
+
+    /// Invariant: nonce only advances on operations that consume one. depositTo with delay,
+    /// safeTransferFrom with delay-or-guardian, and guardian-gated withdrawFrom each consume +1;
+    /// nothing else moves the counter.
+    function testFuzz_NonceMonotonicity(uint96 amount, uint96 delay) public {
+        amount = uint96(bound(amount, 1, 100 ether));
+        delay = uint96(bound(delay, 1, 365 days));
+
+        uint256 n0 = slow.nonces(user1);
+
+        // depositTo with delay > 0 → nonce += 1
+        vm.deal(user1, amount);
+        vm.prank(user1);
+        slow.depositTo{value: amount}(address(0), user2, 0, delay, "");
+        assertEq(slow.nonces(user1), n0 + 1, "delay deposit consumes nonce");
+
+        // depositTo with delay == 0 → nonce unchanged
+        vm.deal(user1, amount);
+        vm.prank(user1);
+        slow.depositTo{value: amount}(address(0), user2, 0, 0, "");
+        assertEq(slow.nonces(user1), n0 + 1, "no-delay deposit does not consume nonce");
+
+        // unlock is permissionless and does not move msg.sender's nonce
+        // (we'd need to warp + unlock to test this; keeping the assertion simple here).
+    }
+
+    // GATE — auto-claim forwarder
+
+    function testGateImmutableAndSlowReference() public view {
+        address g = slow.gate();
+        assertTrue(g != address(0), "gate is set");
+        assertGt(g.code.length, 0, "gate has code");
+        assertEq(address(SLOWGate(g).slow()), address(slow), "gate.slow() points back to SLOW");
+    }
+
+    /// CREATE2 derivation: anyone with (SLOW address, salt 0, gate creation code) can
+    /// compute `slow.gate()` offchain — no event or RPC call required.
+    function testGateAddressIsCreate2Predictable() public view {
+        address predicted = address(
+            uint160(
+                uint256(
+                    keccak256(
+                        abi.encodePacked(
+                            bytes1(0xff),
+                            address(slow),
+                            bytes32(0),
+                            keccak256(type(SLOWGate).creationCode)
+                        )
+                    )
+                )
+            )
+        );
+        assertEq(slow.gate(), predicted, "gate not at CREATE2-predicted address");
+    }
+
+    function testGateClaimETHViaApproval() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.prank(user2);
+        slow.setApprovalForAll(address(gate), true);
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        uint256 user2Before = user2.balance;
+        address keeper = address(0xCAFE);
+        vm.prank(keeper);
+        gate.claim(transferId);
+
+        assertEq(user2.balance, user2Before + AMOUNT, "ETH paid to recipient via gate");
+    }
+
+    function testGateClaimERC20ViaApproval() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+
+        vm.startPrank(user1);
+        token.approve(address(slow), AMOUNT);
+        uint256 transferId = slow.depositTo(address(token), user2, AMOUNT, DELAY, "");
+        vm.stopPrank();
+
+        vm.prank(user2);
+        slow.setApprovalForAll(address(gate), true);
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        uint256 tokBefore = token.balanceOf(user2);
+        gate.claim(transferId);
+        assertEq(token.balanceOf(user2), tokBefore + AMOUNT, "ERC20 paid to recipient via gate");
+    }
+
+    function testGateClaimWithoutApprovalReverts() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        // Recipient never approved the gate — auth check inside slow.claim must reject.
+        vm.expectRevert(SLOW.Unauthorized.selector);
+        gate.claim(transferId);
+    }
+
+    function testGateClaimMany() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+
+        uint256[] memory ids = new uint256[](3);
+        vm.prank(user1);
+        ids[0] = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+        vm.prank(user1);
+        ids[1] = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.startPrank(user1);
+        token.approve(address(slow), AMOUNT);
+        ids[2] = slow.depositTo(address(token), user2, AMOUNT, DELAY, "");
+        vm.stopPrank();
+
+        vm.prank(user2);
+        slow.setApprovalForAll(address(gate), true);
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        uint256 ethBefore = user2.balance;
+        uint256 tokBefore = token.balanceOf(user2);
+
+        gate.claimMany(ids);
+
+        assertEq(user2.balance, ethBefore + 2 * AMOUNT, "two ETH claims settled");
+        assertEq(token.balanceOf(user2), tokBefore + AMOUNT, "ERC20 claim settled");
+    }
+
+    function testGateClaimManyEmpty() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        uint256[] memory ids = new uint256[](0);
+        // Must not revert — the loop is `i != length` so empty arrays no-op.
+        gate.claimMany(ids);
+    }
+
+    function testGateClaimManyAtomicity() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+
+        vm.prank(user1);
+        uint256 valid = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.prank(user2);
+        slow.setApprovalForAll(address(gate), true);
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        uint256[] memory ids = new uint256[](2);
+        ids[0] = valid;
+        ids[1] = 0xdeadbeef; // Nonexistent — second iteration must abort the whole batch.
+
+        uint256 user2Before = user2.balance;
+        vm.expectRevert(SLOW.TransferDoesNotExist.selector);
+        gate.claimMany(ids);
+
+        assertEq(user2.balance, user2Before, "no funds moved on partial failure");
+
+        // Valid transfer still claimable after the rollback.
+        gate.claim(valid);
+        assertEq(user2.balance, user2Before + AMOUNT, "valid claim still works post-revert");
+    }
+
+    function testGateClaimBeforeExpiryReverts() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.prank(user2);
+        slow.setApprovalForAll(address(gate), true);
+
+        // No warp — gate must not bypass the timelock check inside slow.claim.
+        vm.expectRevert(SLOW.TimelockNotExpired.selector);
+        gate.claim(transferId);
+    }
+
+    function testGateCannotRedirectFunds() public {
+        // Safety claim from the SLOWGate NatSpec: "approved gate cannot redirect funds".
+        // No matter who calls gate.claim, the underlying flows to pt.to (set at deposit),
+        // never to the caller and never to the gate itself.
+        SLOWGate gate = SLOWGate(slow.gate());
+        address keeper = address(0xCAFE);
+
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.prank(user2);
+        slow.setApprovalForAll(address(gate), true);
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        uint256 keeperBefore = keeper.balance;
+        uint256 user2Before = user2.balance;
+        uint256 gateBefore = address(gate).balance;
+
+        vm.prank(keeper);
+        gate.claim(transferId);
+
+        assertEq(user2.balance, user2Before + AMOUNT, "funds to original recipient");
+        assertEq(keeper.balance, keeperBefore, "caller receives nothing");
+        assertEq(address(gate).balance, gateBefore, "gate holds nothing");
+    }
+
+    // `claimTipped` is the gate-only entrypoint that skips the operator-approval check.
+    // Direct EOA calls must revert — the gate's exclusivity is the only thing keeping
+    // arbitrary callers from forcing settlements without recipient consent.
+    function testClaimTippedOnlyCallableByGate() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        // Direct EOA call rejected.
+        vm.prank(address(0xBAD));
+        vm.expectRevert(SLOW.Unauthorized.selector);
+        slow.claimTipped(transferId);
+
+        // Even pt.to themselves can't take this path — claimTipped is gate-exclusive.
+        vm.prank(user2);
+        vm.expectRevert(SLOW.Unauthorized.selector);
+        slow.claimTipped(transferId);
+    }
+
+    // The simplification's UX win: when the depositor pays a tip, the recipient does
+    // not need to approve the gate. A keeper can settle directly and earn the tip,
+    // and the recipient receives the underlying without ever interacting with SLOW.
+    function testGateClaimTippedNoRecipientApproval() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        address keeper = address(0xCAFE);
+        uint256 tip = 0.01 ether;
+
+        vm.prank(user1);
+        uint256 transferId =
+            slow.depositToWithTip{value: AMOUNT + tip}(address(0), user2, AMOUNT, DELAY, tip, "");
+
+        // Recipient never calls setApprovalForAll on the gate.
+        assertFalse(slow.isApprovedForAll(user2, address(gate)), "no recipient approval");
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        uint256 keeperBefore = keeper.balance;
+        uint256 user2Before = user2.balance;
+
+        vm.prank(keeper);
+        gate.claim(transferId);
+
+        assertEq(user2.balance, user2Before + AMOUNT, "recipient gets underlying");
+        assertEq(keeper.balance, keeperBefore + tip, "keeper earns the tip");
+        assertEq(address(gate).balance, 0, "gate empty after settlement");
+
+        (uint96 storedTip,) = gate.tips(transferId);
+        assertEq(uint256(storedTip), 0, "tip entry cleared");
+    }
+
+    /// Cross-contract flow: when `pt.to` has a guardian, gate-driven claim must revert
+    /// (claim's guardian-block bubbles up), the tip stays in the gate, the recipient
+    /// settles via the unlock + guardian-approved withdrawFrom path, and the depositor
+    /// recovers the unpaid tip via gate.refundTip.
+    function testTipFlowWithGuardianRecipient() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        address keeper = address(0xCAFE);
+        uint256 tip = 0.01 ether;
+
+        // Depositor sends amount + tip in one tx.
+        vm.prank(user1);
+        uint256 transferId =
+            slow.depositToWithTip{value: AMOUNT + tip}(address(0), user2, AMOUNT, DELAY, tip, "");
+
+        (uint96 storedTip, address tipSender) = gate.tips(transferId);
+        assertEq(uint256(storedTip), tip, "tip recorded on gate");
+        assertEq(tipSender, user1, "tip sender is depositor");
+        assertEq(address(gate).balance, tip, "tip ETH held by gate");
+
+        // Recipient sets a guardian. They never approve the gate — under the tipped
+        // flow the depositor's tip is the consent signal, so the guardian veto is the
+        // load-bearing check, not the operator approval.
+        vm.prank(user2);
+        slow.setGuardian(guardian);
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        // Keeper's claim attempt reverts; tip stays untouched.
+        uint256 keeperBefore = keeper.balance;
+        vm.prank(keeper);
+        vm.expectRevert(SLOW.ClaimBlockedByGuardian.selector);
+        gate.claim(transferId);
+        (storedTip,) = gate.tips(transferId);
+        assertEq(uint256(storedTip), tip, "tip preserved after failed gate.claim");
+        assertEq(keeper.balance, keeperBefore, "keeper earned nothing on failed claim");
+
+        // Recipient settles via unlock + guardian-approved withdrawFrom.
+        vm.prank(user2);
+        slow.unlock(transferId);
+
+        uint256 id = calculateId(address(0), DELAY);
+        uint256 withdrawTransferId = slow.predictWithdrawalId(user2, user2, id, AMOUNT);
+        vm.prank(guardian);
+        slow.approveTransfer(user2, withdrawTransferId);
+
+        uint256 user2Before = user2.balance;
+        vm.prank(user2);
+        slow.withdrawFrom(user2, user2, id, AMOUNT);
+        assertEq(user2.balance, user2Before + AMOUNT, "recipient gets underlying");
+
+        // Pending entry was cleared by unlock, so tip is now refundable.
+        uint256 user1Before = user1.balance;
+        vm.prank(user1);
+        gate.refundTip(transferId);
+        assertEq(user1.balance, user1Before + tip, "depositor recovers tip");
+        assertEq(address(gate).balance, 0, "gate empty");
+
+        (storedTip,) = gate.tips(transferId);
+        assertEq(uint256(storedTip), 0, "tip entry cleared on refund");
+    }
+
+    // ─── tip + sponsored flow: refund paths ──────────────────────────────────
+
+    // Recipient self-claims via slow.claim (bypassing the gate). The pending entry
+    // clears, leaving the tip unclaimed in the gate. Depositor must be able to
+    // pull it back.
+    function testRefundTipAfterRecipientSelfClaim() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        uint256 tip = 0.01 ether;
+
+        vm.prank(user1);
+        uint256 transferId =
+            slow.depositToWithTip{value: AMOUNT + tip}(address(0), user2, AMOUNT, DELAY, tip, "");
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        vm.prank(user2);
+        slow.claim(transferId); // direct, no gate
+
+        uint256 user1Before = user1.balance;
+        vm.prank(user1);
+        gate.refundTip(transferId);
+        assertEq(user1.balance, user1Before + tip, "depositor recovered tip");
+    }
+
+    function testRefundTipAfterReverse() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        uint256 tip = 0.01 ether;
+
+        vm.prank(user1);
+        uint256 transferId =
+            slow.depositToWithTip{value: AMOUNT + tip}(address(0), user2, AMOUNT, DELAY, tip, "");
+
+        vm.prank(user1);
+        slow.reverse(transferId);
+
+        uint256 user1Before = user1.balance;
+        vm.prank(user1);
+        gate.refundTip(transferId);
+        assertEq(user1.balance, user1Before + tip, "tip refunded after reverse");
+    }
+
+    function testRefundTipAfterClawback() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        uint256 tip = 0.01 ether;
+
+        vm.prank(user1);
+        uint256 transferId =
+            slow.depositToWithTip{value: AMOUNT + tip}(address(0), user2, AMOUNT, DELAY, tip, "");
+
+        vm.warp(block.timestamp + DELAY + 30 days + 1); // past clawback grace
+        vm.prank(user1);
+        slow.clawback(transferId);
+
+        uint256 user1Before = user1.balance;
+        vm.prank(user1);
+        gate.refundTip(transferId);
+        assertEq(user1.balance, user1Before + tip, "tip refunded after clawback");
+    }
+
+    function testRefundTipWhilePendingReverts() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        uint256 tip = 0.01 ether;
+
+        vm.prank(user1);
+        uint256 transferId =
+            slow.depositToWithTip{value: AMOUNT + tip}(address(0), user2, AMOUNT, DELAY, tip, "");
+
+        vm.prank(user1);
+        vm.expectRevert(SLOWGate.TipStillPending.selector);
+        gate.refundTip(transferId);
+    }
+
+    function testRefundTipByNonSenderReverts() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        uint256 tip = 0.01 ether;
+
+        vm.prank(user1);
+        uint256 transferId =
+            slow.depositToWithTip{value: AMOUNT + tip}(address(0), user2, AMOUNT, DELAY, tip, "");
+
+        vm.warp(block.timestamp + DELAY + 1);
+        vm.prank(user2);
+        slow.claim(transferId); // pending now cleared
+
+        vm.prank(user2); // recipient is not the tip sender
+        vm.expectRevert(SLOWGate.Unauthorized.selector);
+        gate.refundTip(transferId);
+    }
+
+    function testRefundTipNonexistentReverts() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        vm.prank(user1);
+        vm.expectRevert(SLOWGate.NoTip.selector);
+        gate.refundTip(0xdeadbeef);
+    }
+
+    // ─── tip + sponsored flow: deposit-time validation ───────────────────────
+
+    function testRecordTipOnlyCallableBySLOW() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        vm.deal(address(this), 1 ether);
+        vm.expectRevert(SLOWGate.Unauthorized.selector);
+        gate.recordTip{value: 0.01 ether}(0xdeadbeef, address(this), address(this));
+    }
+
+    function testDepositToWithTipETHValueMismatchReverts() public {
+        uint256 tip = 0.01 ether;
+        vm.prank(user1);
+        vm.expectRevert(SLOW.InvalidDeposit.selector);
+        // msg.value should equal AMOUNT + tip; underpay by 1 wei.
+        slow.depositToWithTip{value: AMOUNT + tip - 1}(address(0), user2, AMOUNT, DELAY, tip, "");
+    }
+
+    function testDepositToWithTipERC20ValueMismatchReverts() public {
+        uint256 tip = 0.01 ether;
+        vm.startPrank(user1);
+        token.approve(address(slow), AMOUNT);
+        vm.expectRevert(SLOW.InvalidDeposit.selector);
+        // ERC20 path: msg.value must equal tip exactly. Sending more is an error.
+        slow.depositToWithTip{value: tip + 1}(address(token), user2, AMOUNT, DELAY, tip, "");
+        vm.stopPrank();
+    }
+
+    function testDepositToWithTipZeroDelayReverts() public {
+        uint256 tip = 0.01 ether;
+        vm.prank(user1);
+        vm.expectRevert(SLOW.InvalidDeposit.selector);
+        slow.depositToWithTip{value: AMOUNT + tip}(address(0), user2, AMOUNT, 0, tip, "");
+    }
+
+    function testDepositToWithTipZeroAmountReverts() public {
+        uint256 tip = 0.01 ether;
+        vm.prank(user1);
+        vm.expectRevert(SLOW.InvalidAmount.selector);
+        slow.depositToWithTip{value: tip}(address(0), user2, 0, DELAY, tip, "");
+    }
+
+    function testDepositToWithTipZeroTipReverts() public {
+        vm.prank(user1);
+        vm.expectRevert(SLOW.InvalidAmount.selector);
+        slow.depositToWithTip{value: AMOUNT}(address(0), user2, AMOUNT, DELAY, 0, "");
+    }
+
+    function testDepositToWithTipTipExceedsUint96Reverts() public {
+        uint256 tip = uint256(type(uint96).max) + 1;
+        vm.deal(user1, tip + AMOUNT);
+        vm.prank(user1);
+        vm.expectRevert(SLOW.InvalidAmount.selector);
+        slow.depositToWithTip{value: AMOUNT + tip}(address(0), user2, AMOUNT, DELAY, tip, "");
+    }
+
+    function testDepositToWithTipToContractItselfReverts() public {
+        uint256 tip = 0.01 ether;
+        vm.prank(user1);
+        vm.expectRevert(SLOW.InvalidDeposit.selector);
+        slow.depositToWithTip{value: AMOUNT + tip}(
+            address(0), address(slow), AMOUNT, DELAY, tip, ""
+        );
+    }
+
+    // ─── tip + sponsored flow: ERC20 deposit + ETH tip ───────────────────────
+
+    function testTippedERC20DepositKeeperGetsETHTip() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        address keeper = address(0xCAFE);
+        uint256 tip = 0.01 ether;
+
+        vm.startPrank(user1);
+        token.approve(address(slow), AMOUNT);
+        uint256 transferId =
+            slow.depositToWithTip{value: tip}(address(token), user2, AMOUNT, DELAY, tip, "");
+        vm.stopPrank();
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        uint256 keeperEthBefore = keeper.balance;
+        uint256 user2TokBefore = token.balanceOf(user2);
+        vm.prank(keeper);
+        gate.claim(transferId); // recipient never approved
+
+        assertEq(token.balanceOf(user2), user2TokBefore + AMOUNT, "recipient got ERC20");
+        assertEq(keeper.balance, keeperEthBefore + tip, "keeper got ETH tip");
+    }
+
+    // ─── tip + sponsored flow: cross-id sibling isolation ────────────────────
+
+    // Two pending transfers to the same recipient at the same (token, delay)
+    // id — one tipped, one untipped. Sponsored claim of the tipped one must
+    // not unwrap the untipped sibling.
+    function testTippedAndUntippedSiblingsAtSameIdIsolated() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        address keeper = address(0xCAFE);
+        uint256 tip = 0.01 ether;
+
+        // Untipped: 2 ETH from user2 to user1 with same delay.
+        vm.prank(user2);
+        uint256 untipped = slow.depositTo{value: 2 ether}(address(0), user1, 0, DELAY, "");
+
+        // Tipped: 1 ETH from user2 to user1, same delay.
+        vm.prank(user2);
+        uint256 tipped =
+            slow.depositToWithTip{value: 1 ether + tip}(address(0), user1, 1 ether, DELAY, tip, "");
+
+        uint256 id = calculateId(address(0), DELAY);
+        assertEq(slow.balanceOf(user1, id), 3 ether, "wrapper balance is sum");
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        uint256 user1EthBefore = user1.balance;
+        vm.prank(keeper);
+        gate.claim(tipped); // sponsored — no approval needed
+
+        assertEq(user1.balance, user1EthBefore + 1 ether, "only tipped underlying delivered");
+        assertEq(slow.balanceOf(user1, id), 2 ether, "untipped sibling wrapper intact");
+
+        // Untipped sibling still requires recipient consent.
+        vm.expectRevert(SLOW.Unauthorized.selector);
+        gate.claim(untipped);
+    }
+
+    // ─── tip + sponsored flow: claimMany with mixed tipping ──────────────────
+
+    function testGateClaimManyMixesTippedUntipped() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        address keeper = address(0xCAFE);
+        uint256 tip = 0.01 ether;
+
+        // user2 approves so the untipped one can settle via gate.
+        vm.prank(user2);
+        slow.setApprovalForAll(address(gate), true);
+
+        vm.prank(user1);
+        uint256 untipped = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+        vm.prank(user1);
+        uint256 tipped =
+            slow.depositToWithTip{value: AMOUNT + tip}(address(0), user2, AMOUNT, DELAY, tip, "");
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        uint256[] memory ids = new uint256[](2);
+        ids[0] = untipped;
+        ids[1] = tipped;
+
+        uint256 user2Before = user2.balance;
+        uint256 keeperBefore = keeper.balance;
+        vm.prank(keeper);
+        gate.claimMany(ids);
+
+        assertEq(user2.balance, user2Before + 2 * AMOUNT, "both transfers settled");
+        assertEq(keeper.balance, keeperBefore + tip, "tip paid only for tipped one");
+    }
+
+    // ─── tip + sponsored flow: event emission ────────────────────────────────
+
+    function testTipEventsEmitted() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        address keeper = address(0xCAFE);
+        uint256 tip = 0.01 ether;
+
+        // Don't pre-bind transferId — use recordEmits + check after.
+        vm.recordLogs();
+        vm.prank(user1);
+        uint256 transferId =
+            slow.depositToWithTip{value: AMOUNT + tip}(address(0), user2, AMOUNT, DELAY, tip, "");
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool sawPosted;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics[0] == keccak256("TipPosted(uint256,uint96,address,address)")) {
+                assertEq(uint256(logs[i].topics[1]), transferId, "TipPosted transferId");
+                assertEq(address(uint160(uint256(logs[i].topics[2]))), user1, "TipPosted sender");
+                assertEq(address(uint160(uint256(logs[i].topics[3]))), user2, "TipPosted to");
+                sawPosted = true;
+            }
+        }
+        assertTrue(sawPosted, "TipPosted emitted on deposit");
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        vm.recordLogs();
+        vm.prank(keeper);
+        gate.claim(transferId);
+
+        logs = vm.getRecordedLogs();
+        bool sawPaid;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics[0] == keccak256("TipPaid(uint256,uint96,address)")) {
+                assertEq(uint256(logs[i].topics[1]), transferId, "TipPaid transferId");
+                assertEq(address(uint160(uint256(logs[i].topics[2]))), keeper, "TipPaid recipient");
+                sawPaid = true;
+            }
+        }
+        assertTrue(sawPaid, "TipPaid emitted on keeper claim");
+    }
+
+    function testTipRefundedEventEmitted() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        uint256 tip = 0.01 ether;
+
+        vm.prank(user1);
+        uint256 transferId =
+            slow.depositToWithTip{value: AMOUNT + tip}(address(0), user2, AMOUNT, DELAY, tip, "");
+
+        vm.prank(user1);
+        slow.reverse(transferId);
+
+        vm.recordLogs();
+        vm.prank(user1);
+        gate.refundTip(transferId);
+
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        bool sawRefunded;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics[0] == keccak256("TipRefunded(uint256,uint96,address)")) {
+                assertEq(uint256(logs[i].topics[1]), transferId, "TipRefunded transferId");
+                assertEq(address(uint160(uint256(logs[i].topics[2]))), user1, "TipRefunded to");
+                sawRefunded = true;
+            }
+        }
+        assertTrue(sawRefunded, "TipRefunded emitted on refund");
+    }
+
+    // ─── unlock auth: third parties cannot grief settlement ──────────────────────
+
+    function testUnlockRevertsForThirdParty() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        // Random third party (incl. the sender) cannot unlock.
+        vm.expectRevert(SLOW.Unauthorized.selector);
+        slow.unlock(transferId);
+
+        vm.prank(user1);
+        vm.expectRevert(SLOW.Unauthorized.selector);
+        slow.unlock(transferId);
+
+        // Recipient still can.
+        vm.prank(user2);
+        slow.unlock(transferId);
+    }
+
+    function testUnlockByRecipientOperator() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        // Recipient approves a keeper as operator (e.g. the gate).
+        address keeper = address(0xBEEF);
+        vm.prank(user2);
+        slow.setApprovalForAll(keeper, true);
+
+        vm.warp(block.timestamp + DELAY + 1);
+
+        vm.prank(keeper);
+        slow.unlock(transferId);
+
+        uint256 id = calculateId(address(0), DELAY);
+        assertEq(
+            slow.unlockedBalances(user2, id), AMOUNT, "operator-driven unlock credits recipient"
+        );
+    }
+
+    // Even after the clawback grace, third parties still cannot unlock — sender's
+    // clawback path stays reachable as long as the recipient hasn't acted.
+    function testUnlockGriefAfterGraceStillBlocked() public {
+        vm.prank(user1);
+        uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
+
+        vm.warp(block.timestamp + DELAY + 30 days + 1);
+
+        vm.expectRevert(SLOW.Unauthorized.selector);
+        slow.unlock(transferId);
+
+        // Sender's clawback still works because pending wasn't griefed away.
+        vm.prank(user1);
+        slow.clawback(transferId);
+    }
+
+    // ─── op-type isolation: transfer approval cannot be consumed as withdraw ─────
+
+    function testTransferApprovalDoesNotAuthorizeWithdraw() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        vm.prank(user1);
+        slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, "");
+
+        uint256 id = calculateId(address(0), 0);
+
+        // Guardian approves a TRANSFER preimage.
+        uint256 transferHash = slow.predictTransferId(user1, user2, id, AMOUNT);
+        vm.prank(guardian);
+        slow.approveTransfer(user1, transferHash);
+
+        // The withdraw preimage is distinct, so withdrawFrom still requires its own approval.
+        uint256 withdrawHash = slow.predictWithdrawalId(user1, user2, id, AMOUNT);
+        assertTrue(transferHash != withdrawHash, "transfer and withdraw hashes must differ");
+
+        vm.prank(user1);
+        vm.expectRevert(SLOW.GuardianApprovalRequired.selector);
+        slow.withdrawFrom(user1, user2, id, AMOUNT);
+
+        // Approving the withdraw preimage unlocks the withdraw.
+        vm.prank(guardian);
+        slow.approveTransfer(user1, withdrawHash);
+
+        uint256 user2Before = user2.balance;
+        vm.prank(user1);
+        slow.withdrawFrom(user1, user2, id, AMOUNT);
+        assertEq(
+            user2.balance - user2Before, AMOUNT, "withdraw succeeded with op-specific approval"
+        );
+    }
+
+    function testWithdrawApprovalDoesNotAuthorizeTransfer() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        vm.prank(user1);
+        slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, "");
+
+        uint256 id = calculateId(address(0), 0);
+
+        // Guardian approves a WITHDRAW preimage.
+        uint256 withdrawHash = slow.predictWithdrawalId(user1, user2, id, AMOUNT);
+        vm.prank(guardian);
+        slow.approveTransfer(user1, withdrawHash);
+
+        // safeTransferFrom uses the TRANSFER preimage and is still blocked.
+        vm.prank(user1);
+        vm.expectRevert(SLOW.GuardianApprovalRequired.selector);
+        slow.safeTransferFrom(user1, user2, id, AMOUNT, "");
+    }
+
+    function testIsWithdrawalApprovalNeededFlipsIndependently() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        uint256 id = calculateId(address(0), 0);
+
+        assertTrue(slow.isGuardianApprovalNeeded(user1, user2, id, AMOUNT));
+        assertTrue(slow.isWithdrawalApprovalNeeded(user1, user2, id, AMOUNT));
+
+        // Approving the transfer hash flips only the transfer view.
+        uint256 tHash = slow.predictTransferId(user1, user2, id, AMOUNT);
+        vm.prank(guardian);
+        slow.approveTransfer(user1, tHash);
+
+        assertFalse(slow.isGuardianApprovalNeeded(user1, user2, id, AMOUNT));
+        assertTrue(slow.isWithdrawalApprovalNeeded(user1, user2, id, AMOUNT));
+    }
+
+    // ─── revokeApproval: guardian can retract a single approval ─────────────────
+
+    function testRevokeApprovalByGuardian() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        vm.prank(user1);
+        slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, "");
+
+        uint256 id = calculateId(address(0), 0);
+        uint256 transferId = slow.predictTransferId(user1, user2, id, AMOUNT);
+
+        vm.prank(guardian);
+        slow.approveTransfer(user1, transferId);
+        assertTrue(slow.guardianApproved(transferId));
+
+        // Guardian retracts.
+        vm.prank(guardian);
+        slow.revokeApproval(user1, transferId);
+        assertFalse(slow.guardianApproved(transferId));
+
+        // Transfer using the now-revoked approval is blocked.
+        vm.prank(user1);
+        vm.expectRevert(SLOW.GuardianApprovalRequired.selector);
+        slow.safeTransferFrom(user1, user2, id, AMOUNT, "");
+    }
+
+    function testRevokeApprovalUnauthorizedReverts() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        uint256 fakeId = uint256(keccak256("anything"));
+
+        // Non-guardian cannot revoke.
+        vm.prank(user1);
+        vm.expectRevert(SLOW.Unauthorized.selector);
+        slow.revokeApproval(user1, fakeId);
+
+        vm.prank(user2);
+        vm.expectRevert(SLOW.Unauthorized.selector);
+        slow.revokeApproval(user1, fakeId);
+    }
+
+    function testRevokeApprovalIsIdempotent() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        uint256 fakeId = uint256(keccak256("never approved"));
+
+        // Revoking a non-existent approval is a no-op (no revert).
+        vm.prank(guardian);
+        slow.revokeApproval(user1, fakeId);
+        assertFalse(slow.guardianApproved(fakeId));
+    }
+
+    // ─── withdrawFrom rejects zero amount ───────────────────────────────────────
+
+    function testWithdrawZeroAmountReverts() public {
+        vm.prank(user1);
+        slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, "");
+
+        uint256 id = calculateId(address(0), 0);
+
+        vm.prank(user1);
+        vm.expectRevert(SLOW.InvalidAmount.selector);
+        slow.withdrawFrom(user1, user2, id, 0);
+    }
+}
+
+// Records calls so testHtmlRegistryRegisteredOnDeploy can assert the constructor pinged it.
+contract MockHtmlRegistry {
+    address public lastTarget;
+    string public lastHtml;
+
+    function setHtmlAsTarget(address target, string calldata h) external {
+        lastTarget = target;
+        lastHtml = h;
     }
 }
 
@@ -998,6 +3011,55 @@ contract MockERC20 {
     }
 }
 
+// Recipient that attempts to re-enter SLOW from its receive() hook during claim()'s
+// ETH payout. The nonReentrant guard on claim() must reject the second call.
+contract ReentrantClaimReceiver {
+    SLOW slow;
+    bool public reentryRejected;
+    uint256 lastTransferId;
+
+    constructor(SLOW _slow) payable {
+        slow = _slow;
+    }
+
+    function deposit(uint96 delay) external returns (uint256) {
+        return slow.depositTo{value: address(this).balance}(address(0), address(this), 0, delay, "");
+    }
+
+    function callClaim(uint256 transferId) external {
+        lastTransferId = transferId;
+        slow.claim(transferId);
+    }
+
+    receive() external payable {
+        // bytes4(keccak256("Reentrancy()")) == 0xab143c06
+        try slow.claim(lastTransferId) {
+        // unreachable
+        }
+        catch (bytes memory err) {
+            if (err.length == 4 && bytes4(err) == 0xab143c06) reentryRejected = true;
+        }
+    }
+
+    function onERC1155Received(address, address, uint256, uint256, bytes calldata)
+        external
+        pure
+        returns (bytes4)
+    {
+        return this.onERC1155Received.selector;
+    }
+
+    function onERC1155BatchReceived(
+        address,
+        address,
+        uint256[] calldata,
+        uint256[] calldata,
+        bytes calldata
+    ) external pure returns (bytes4) {
+        return this.onERC1155BatchReceived.selector;
+    }
+}
+
 // Receiver that attempts to re-enter SLOW from its onERC1155Received hook
 contract ReentrantReceiver {
     SLOW slow;
@@ -1021,8 +3083,9 @@ contract ReentrantReceiver {
     {
         // Re-entry attempt — nonReentrant on unlock() should reject with Reentrancy().
         try slow.unlock(0) {
-            // unreachable
-        } catch (bytes memory err) {
+        // unreachable
+        }
+        catch (bytes memory err) {
             // bytes4(keccak256("Reentrancy()")) == 0xab143c06
             if (err.length == 4 && bytes4(err) == 0xab143c06) {
                 reentryRejected = true;
@@ -1039,5 +3102,65 @@ contract ReentrantReceiver {
         bytes calldata
     ) external pure returns (bytes4) {
         return this.onERC1155BatchReceived.selector;
+    }
+}
+
+// Returns metadata crafted to break out of the JSON description and inject a fake image field.
+contract EvilToken {
+    function name() external pure returns (string memory) {
+        return '","image":"evil_image';
+    }
+
+    function symbol() external pure returns (string memory) {
+        return "EVIL";
+    }
+
+    function decimals() external pure returns (uint8) {
+        return 18;
+    }
+}
+
+// 65-byte name() ending in 三 (U+4E09, 3 bytes 0xE4 0xB8 0x89). readName(64) cuts at
+// byte 64 and leaves only the first 2 bytes of the codepoint — invalid UTF-8 unless
+// SLOW's _utf8Trim drops the partial sequence.
+contract LongCjkTailToken {
+    function name() external pure returns (string memory) {
+        return string(
+            abi.encodePacked(
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", unicode"三"
+            )
+        );
+    }
+
+    function symbol() external pure returns (string memory) {
+        return "CJK";
+    }
+}
+
+// 64-byte name() of 61 'A's + 三 (3 bytes). Lands exactly on a complete UTF-8 boundary
+// so _utf8Trim should restore the bytes it walked over rather than trim them.
+contract CompleteCjkTailToken {
+    function name() external pure returns (string memory) {
+        return string(
+            abi.encodePacked(
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", unicode"三"
+            )
+        );
+    }
+
+    function symbol() external pure returns (string memory) {
+        return "CCJK";
+    }
+}
+
+// 30-byte ASCII name() over the 28-byte SVG display cap; tests that _clipForDisplay
+// only truncates the SVG row while the JSON description retains the full name.
+contract LongAsciiNameToken {
+    function name() external pure returns (string memory) {
+        return "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"; // 30 'A's
+    }
+
+    function symbol() external pure returns (string memory) {
+        return "LNT";
     }
 }

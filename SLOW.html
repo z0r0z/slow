@@ -1,0 +1,974 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>send slow ᯓ➤</title>
+<style>
+:root {
+  --bg:#000; --fg:#fff; --bg2:#1a1a1a; --bg3:#333; --bd:#333;
+  --eth:#ff69b4; --usdc:#2775ca; --usdt:#26a17b; --bold:#745DDF;
+  --t:.3s ease;
+}
+body.light {
+  --bg:#fff; --fg:#000; --bg2:#e6e6e6; --bg3:#ccc; --bd:#ccc;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{height:100vh;display:flex;justify-content:center;align-items:center;background:var(--bg);color:var(--fg);font-family:Arial,sans-serif;transition:background var(--t),color var(--t);position:relative;overflow:hidden}
+.theme,.wallet{position:absolute;top:20px;background:var(--bg2);color:var(--fg);border:1px solid var(--bd);padding:10px 15px;border-radius:4px;font-size:14px;cursor:pointer;z-index:50;transition:var(--t)}
+.theme{left:20px;width:42px;text-align:center;padding:10px 0}
+.wallet{right:20px}
+.theme:hover,.wallet:hover{background:var(--bg3)}
+.frame{display:flex;flex-direction:column;width:200px;border:2px solid var(--fg);overflow:hidden;transition:var(--t);user-select:none;position:relative;z-index:5}
+.box{height:100px;display:flex;justify-content:center;align-items:center;font-weight:bold;font-size:24px;cursor:pointer;transition:var(--t)}
+#sendBox{background:var(--fg);color:var(--bg)}
+#takeBox{background:var(--bg);color:var(--fg)}
+#sendBox.on{background:var(--bg);color:var(--fg)}
+#takeBox.on{background:var(--fg);color:var(--bg)}
+.divider{height:2px;background:var(--fg)}
+.crypto-grid{display:none;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:10px;width:300px;height:300px;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)}
+.crypto-grid.on{display:grid}
+.crypto{display:flex;font-weight:bold;font-size:24px;color:#fff;cursor:pointer;border:2px solid transparent;transition:var(--t);padding:15px}
+.crypto:nth-child(1){justify-content:flex-start;align-items:flex-start}
+.crypto:nth-child(2){justify-content:flex-end;align-items:flex-start}
+.crypto:nth-child(3){justify-content:flex-start;align-items:flex-end}
+.crypto:nth-child(4){justify-content:flex-end;align-items:flex-end}
+.crypto.sel{border:4px solid var(--fg);box-shadow:0 0 10px rgba(128,128,128,.6)}
+[data-symbol=ETH]{background:var(--eth)}
+[data-symbol=USDC]{background:var(--usdc)}
+[data-symbol=USDT]{background:var(--usdt)}
+[data-symbol=BOLD]{background:var(--bold)}
+.row{display:none;position:absolute;left:50%;transform:translateX(-50%);gap:10px;z-index:6}
+.row.on{display:flex}
+#amountRow{top:40px}
+#timeRow{bottom:40px}
+.opt{font-weight:bold;font-size:18px;color:var(--fg);background:var(--bg2);cursor:pointer;border:1px solid var(--bd);padding:15px 20px;min-width:80px;text-align:center;transition:var(--t);user-select:none}
+.opt:hover{background:var(--bg3)}
+.opt.sel{background:var(--bg3);border:2px solid var(--fg);box-shadow:0 0 10px rgba(128,128,128,.4)}
+.modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);justify-content:center;align-items:center;z-index:25}
+body.light .modal{background:rgba(0,0,0,.5)}
+.modal.on{display:flex}
+.card{background:var(--bg);border:2px solid var(--fg);color:var(--fg);padding:30px;width:min(350px,calc(100vw - 32px));text-align:center;border-radius:6px}
+.card h3{margin-bottom:15px}
+.summary{font-size:24px;font-weight:bold;margin-bottom:30px}
+.input{width:100%;background:var(--bg2);color:var(--fg);border:1px solid var(--bd);padding:12px;font-size:16px;border-radius:4px;text-align:center;margin-bottom:20px}
+.input:focus{outline:none;border-color:var(--fg)}
+.btn{background:var(--fg);color:var(--bg);border:none;padding:12px 30px;font-size:18px;font-weight:bold;cursor:pointer;border-radius:4px;transition:var(--t);width:100%}
+.btn:hover{filter:brightness(.9)}
+.ens{font-size:14px;text-align:left;height:20px;margin-bottom:10px}
+.ens.ok{color:#4caf50}
+.ens.err{color:#ff6b6b}
+.tgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:0 0 20px}
+.tgrid div{display:flex;flex-direction:column;align-items:center}
+.tgrid input{width:100%;background:var(--bg2);color:var(--fg);border:1px solid var(--bd);padding:10px;text-align:center;font-size:18px;border-radius:4px}
+.tgrid label{font-size:13px;margin-top:5px}
+.take{display:none;flex-direction:column;width:80vw;max-width:800px;max-height:70vh;overflow-y:auto;gap:24px;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:5}
+.take.on{display:flex}
+.tabs{display:none;position:absolute;top:20px;left:50%;transform:translateX(-50%);z-index:7;gap:8px}
+.tabs.on{display:flex}
+.tab{padding:8px 15px;background:var(--bg2);color:var(--fg);border:1px solid var(--bd);cursor:pointer;border-radius:4px;font-size:14px;transition:var(--t)}
+.tab.on{background:var(--bg3);border-color:var(--fg)}
+.tab:hover:not(.on){filter:brightness(1.1)}
+.empty{text-align:center;padding:50px;color:#888}
+.line{height:20px;border-radius:10px;overflow:hidden;position:relative;display:flex;align-items:center}
+.line[data-sym=ETH]{background:var(--eth)}
+.line[data-sym=USDC]{background:var(--usdc)}
+.line[data-sym=USDT]{background:var(--usdt)}
+.line[data-sym=BOLD]{background:var(--bold)}
+.line[data-sym=other]{background:#888}
+.bar{position:absolute;height:100%;background:rgba(0,0,0,.25);z-index:1;transition:width .5s}
+body.light .bar{background:rgba(255,255,255,.4)}
+.arrow{position:absolute;width:20px;height:20px;display:flex;justify-content:center;align-items:center;color:#fff;font-size:20px;line-height:20px;cursor:pointer;z-index:6;transition:left .5s,transform .2s}
+.arrow:hover{transform:scale(1.2);z-index:7}
+.arrow.done{color:gold;text-shadow:0 0 5px gold;background:rgba(0,0,0,.3);border-radius:50%;padding:2px}
+.tip{position:absolute;background:rgba(0,0,0,.85);color:#fff;padding:10px 12px;border-radius:6px;font-size:12px;pointer-events:none;opacity:0;transition:opacity .2s;white-space:nowrap;border:1px solid #333;top:-10px;transform:translateY(-100%);box-shadow:0 2px 8px rgba(0,0,0,.4)}
+body.light .tip{background:rgba(255,255,255,.95);color:#000;border-color:#ccc}
+.arrow:hover .tip{opacity:1}
+.tt{display:flex;justify-content:space-between;margin:2px 0;gap:12px}
+.tl{font-weight:bold;color:#aaa}
+body.light .tl{color:#555}
+.label{font-size:14px;font-weight:bold;margin-bottom:4px}
+.opt-link{display:none;position:absolute;left:50%;top:calc(50% + 165px);transform:translateX(-50%);background:var(--bg2);color:var(--fg);font-size:13px;font-weight:bold;cursor:pointer;letter-spacing:.5px;z-index:6;border:1px dashed var(--bd);border-radius:4px;padding:8px 16px;transition:var(--t)}
+.opt-link.on{display:block}
+.opt-link:hover{background:var(--bg3);border-style:solid}
+.opt-link.sel{color:#fff;border:2px solid var(--fg);box-shadow:0 0 10px rgba(128,128,128,.6)}
+.crypto-grid.dim .crypto{opacity:.35}
+.spinner{width:50px;height:50px;border:5px solid rgba(128,128,128,.3);border-radius:50%;border-top-color:var(--fg);animation:sp 1s ease-in-out infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.loading{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:30;justify-content:center;align-items:center;flex-direction:column}
+.loading.on{display:flex}
+.loading p{color:#fff;margin-top:15px;font-size:16px}
+body.light .loading{background:rgba(255,255,255,.7)}
+body.light .loading p{color:#000}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--bg2);color:var(--fg);border:1px solid var(--bd);padding:12px 20px;border-radius:4px;font-size:14px;z-index:40;opacity:0;transition:opacity .3s;max-width:80%;text-align:center;pointer-events:none}
+.toast.on{opacity:1}
+@media (max-width:480px){
+  .frame{width:180px}
+  .box{height:90px;font-size:22px}
+  .crypto-grid{width:280px;height:280px}
+  .crypto{font-size:20px;padding:12px}
+  .opt{min-width:60px;padding:12px 14px;font-size:16px}
+  #amountRow{top:24px}
+  #timeRow{bottom:24px}
+  .theme,.wallet{top:12px;padding:8px 12px;font-size:13px}
+  .theme{left:12px}
+  .wallet{right:12px}
+  .card{padding:24px 20px}
+  .summary{font-size:20px;margin-bottom:20px}
+  .take{width:calc(100vw - 24px);gap:18px}
+  .opt-link{top:calc(50% + 150px)}
+}
+</style>
+</head>
+<body>
+<button class="theme" id="themeBtn">☾</button>
+<button class="wallet" id="walletBtn">Connect</button>
+
+<div class="crypto-grid" id="cryptoGrid">
+  <div class="crypto" data-symbol="ETH"  data-token="0x0000000000000000000000000000000000000000">ETH</div>
+  <div class="crypto" data-symbol="USDC" data-token="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48">USDC</div>
+  <div class="crypto" data-symbol="BOLD" data-token="0x6440f144b7e50D6a8439336510312d2F54beB01D">BOLD</div>
+  <div class="crypto" data-symbol="USDT" data-token="0xdAC17F958D2ee523a2206206994597C13D831ec7">USDT</div>
+</div>
+
+<div class="frame">
+  <div class="box" id="sendBox">SEND</div>
+  <div class="divider"></div>
+  <div class="box" id="takeBox">TAKE</div>
+</div>
+
+<div class="row" id="amountRow">
+  <div class="opt" data-amount="1">1</div>
+  <div class="opt" data-amount="10">10</div>
+  <div class="opt" data-amount="100">100</div>
+  <div class="opt" id="customAmountOpt">???</div>
+</div>
+<div class="row" id="timeRow">
+  <div class="opt" data-time="600"   data-display="10 MIN">10 MIN</div>
+  <div class="opt" data-time="3600"  data-display="1 HOUR">1 HOUR</div>
+  <div class="opt" data-time="86400" data-display="1 DAY">1 DAY</div>
+  <div class="opt" id="customTimeOpt">CUSTOM</div>
+</div>
+<div class="opt-link" id="customTokenOpt">USE CUSTOM TOKEN</div>
+
+<div class="tabs" id="tabs">
+  <div class="tab on" data-tab="outbound">Outbound</div>
+  <div class="tab" data-tab="inbound">Inbound</div>
+</div>
+<div class="take" id="take"></div>
+
+<div class="modal" id="amountModal"><div class="card">
+  <h3>Custom Amount</h3>
+  <input type="number" class="input" id="amountInput" min="0" step="any" placeholder="0">
+  <button class="btn" id="amountApply">Apply</button>
+</div></div>
+<div class="modal" id="timeModal"><div class="card">
+  <h3>Custom Delay</h3>
+  <div class="tgrid">
+    <div><input type="number" id="dInput" min="0" placeholder="0"><label>Days</label></div>
+    <div><input type="number" id="hInput" min="0" placeholder="0"><label>Hours</label></div>
+    <div><input type="number" id="mInput" min="0" placeholder="0"><label>Minutes</label></div>
+    <div><input type="number" id="sInput" min="0" placeholder="0"><label>Seconds</label></div>
+  </div>
+  <button class="btn" id="timeApply">Apply</button>
+</div></div>
+<div class="modal" id="confirmModal"><div class="card">
+  <div class="summary" id="summary"></div>
+  <input type="text" class="input" id="recipientInput" placeholder="Address, .eth, or .wei">
+  <div class="ens" id="ens"></div>
+  <button class="btn" id="confirmBtn">CONFIRM SEND</button>
+</div></div>
+<div class="modal" id="approveModal"><div class="card">
+  <h3>Approve Token</h3>
+  <p id="approveText" style="margin:20px 0"></p>
+  <button class="btn" id="approveBtn">APPROVE</button>
+</div></div>
+<div class="modal" id="tokenModal"><div class="card">
+  <h3>Custom Token</h3>
+  <input type="text" class="input" id="tokenInput" placeholder="0x… contract address" autocomplete="off" spellcheck="false">
+  <div class="ens" id="tokenStatus"></div>
+  <button class="btn" id="tokenApply">Apply</button>
+</div></div>
+<div class="loading" id="loading"><div class="spinner"></div><p id="loadingText">Processing...</p></div>
+<div class="toast" id="toast"></div>
+
+<script>
+(()=>{
+'use strict';
+const $ = id => document.getElementById(id);
+const SLOW = '0x000000000000888741B254d37e1b27128AfEAaBC';
+const ZERO = '0x0000000000000000000000000000000000000000';
+const MAINNET = '0x1';
+const ENS_REG = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e';
+const WNS = '0x0000000000696760E15f265e828DB644A0c242EB';
+const GRACE = 2592000; // 30 days, mirrors _CLAWBACK_GRACE in SLOW.sol
+const SEL = {
+  depositTo:'0x94eeaec9', unlock:'0x6198e339', reverse:'0x97d15425',
+  claim:'0x379607f5', clawback:'0xfcc36bc9',
+  withdrawFrom:'0xd4fdc309', multicall:'0xac9650d8', pendingTransfers:'0x6577b86a',
+  getOut:'0xd40d4bc6', getIn:'0xe3993ee7',
+  guardians:'0x0633b14a', isGuardianApprovalNeeded:'0xaade934f',
+  approve:'0x095ea7b3', allowance:'0xdd62ed3e', decimals:'0x313ce567', symbol:'0x95d89b41',
+  resolver:'0x0178b8bf', addr:'0x3b3b57de', ensName:'0x691f3431',
+  wnsReverse:'0x9af8b7aa',
+};
+const M64 = (1n<<64n)-1n;
+const RC = [1n,32898n,9223372036854808714n,9223372039002292224n,32907n,2147483649n,9223372039002292353n,9223372036854808585n,138n,136n,2147516425n,2147483658n,2147516555n,9223372036854775947n,9223372036854808713n,9223372036854808579n,9223372036854808578n,9223372036854775936n,32778n,9223372039002259466n,9223372039002292353n,9223372036854808704n,2147483649n,9223372039002292232n];
+const ROT = [0,1,62,28,27,36,44,6,55,20,3,10,43,25,39,41,45,15,21,8,18,2,61,56,14];
+const rotL = (x,n)=>((x<<n)|(x>>(64n-n)))&M64;
+function kF(s){
+  for(let r=0;r<24;r++){
+    const C=[0n,0n,0n,0n,0n];
+    for(let x=0;x<5;x++) C[x]=s[x]^s[x+5]^s[x+10]^s[x+15]^s[x+20];
+    const D=[0n,0n,0n,0n,0n];
+    for(let x=0;x<5;x++) D[x]=C[(x+4)%5]^rotL(C[(x+1)%5],1n);
+    for(let x=0;x<5;x++)for(let y=0;y<5;y++) s[x+5*y]^=D[x];
+    const B=new Array(25);
+    for(let x=0;x<5;x++)for(let y=0;y<5;y++) B[y+5*((2*x+3*y)%5)]=rotL(s[x+5*y],BigInt(ROT[x+5*y]));
+    for(let x=0;x<5;x++)for(let y=0;y<5;y++) s[x+5*y]=(B[x+5*y]^((~B[((x+1)%5)+5*y])&B[((x+2)%5)+5*y]))&M64;
+    s[0]^=RC[r];
+  }
+}
+function keccak256(input){
+  let bytes;
+  if(typeof input==='string'){
+    if(input.startsWith('0x')){
+      bytes=new Uint8Array((input.length-2)/2);
+      for(let i=0;i<bytes.length;i++) bytes[i]=parseInt(input.slice(2+i*2,4+i*2),16);
+    } else bytes=new TextEncoder().encode(input);
+  } else bytes=input;
+  const R=136, s=new Array(25).fill(0n);
+  let p=0;
+  while(p+R<=bytes.length){
+    for(let i=0;i<R;i++){const l=i>>3; s[l]=(s[l]^(BigInt(bytes[p+i])<<BigInt((i&7)*8)))&M64;}
+    kF(s); p+=R;
+  }
+  const buf=new Uint8Array(R);
+  for(let i=p;i<bytes.length;i++) buf[i-p]=bytes[i];
+  buf[bytes.length-p]=1; buf[R-1]|=0x80;
+  for(let i=0;i<R;i++){const l=i>>3; s[l]=(s[l]^(BigInt(buf[i])<<BigInt((i&7)*8)))&M64;}
+  kF(s);
+  let o='0x';
+  for(let i=0;i<32;i++) o+=Number((s[i>>3]>>BigInt((i&7)*8))&0xffn).toString(16).padStart(2,'0');
+  return o;
+}
+const strip = h => h && h.startsWith('0x') ? h.slice(2) : (h||'');
+const padL  = h => strip(h).padStart(64,'0');
+const padR  = h => { const s=strip(h); return s.padEnd(Math.ceil(s.length/64)*64||64,'0'); };
+const word  = v => (typeof v==='bigint'?v:BigInt(v)).toString(16).padStart(64,'0');
+const isDyn = t => t==='bytes'||t==='string'||t.endsWith('[]');
+const encStatic = (t,v) => t==='address'?padL(v):word(v);
+function encBytes(b){const d=strip(b),L=d.length/2; return word(L)+(L?padR(d):'');}
+function encBytesArr(arr){
+  let h='',t='',c=arr.length*32;
+  for(const b of arr){h+=word(c); const e=encBytes(b); t+=e; c+=e.length/2;}
+  return word(arr.length)+h+t;
+}
+const encDyn = (t,v) => t==='bytes[]'?encBytesArr(v):encBytes(v);
+function encode(types,values){
+  const heads=[],tails=[];
+  for(let i=0;i<types.length;i++){
+    if(isDyn(types[i])){heads.push(null); tails.push(encDyn(types[i],values[i]));}
+    else {heads.push(encStatic(types[i],values[i])); tails.push('');}
+  }
+  let c=types.length*32;
+  for(let i=0;i<types.length;i++) if(heads[i]===null){heads[i]=word(c); c+=tails[i].length/2;}
+  return heads.join('')+tails.join('');
+}
+const cd = (sel,types,vals) => sel+encode(types,vals);
+function decode(types,hex){
+  const d=strip(hex),out=[];
+  for(let i=0;i<types.length;i++){
+    const t=types[i], w=d.slice(i*64,i*64+64);
+    if(!isDyn(t)){out.push(t==='address'?'0x'+w.slice(24):BigInt('0x'+w)); continue;}
+    const off=parseInt(w,16)*2, len=parseInt(d.slice(off,off+64),16);
+    if(t==='string'){
+      const a=new Uint8Array(len);
+      for(let j=0;j<len;j++) a[j]=parseInt(d.slice(off+64+j*2,off+66+j*2),16);
+      out.push(new TextDecoder().decode(a));
+    } else if(t==='uint256[]'){
+      const v=[];
+      for(let j=0;j<len;j++) v.push(BigInt('0x'+d.slice(off+64+j*64,off+128+j*64)));
+      out.push(v);
+    } else throw new Error('decode: '+t);
+  }
+  return out;
+}
+function parseUnits(amt,dec){
+  const [w='0',f=''] = String(amt).split('.');
+  return BigInt(w||'0')*10n**BigInt(dec)+BigInt((f+'0'.repeat(dec)).slice(0,dec)||'0');
+}
+function formatUnits(v,dec){
+  const big=typeof v==='bigint'?v:BigInt(v);
+  const div=10n**BigInt(dec), w=big/div, f=big%div;
+  if(!f) return w.toString();
+  const fs=f.toString().padStart(dec,'0').replace(/0+$/,'');
+  return w+(fs?'.'+fs:'');
+}
+function fmtNum(v){
+  const n=parseFloat(v);
+  if(isNaN(n)) return v;
+  return n===Math.floor(n) ? n.toString() : n.toLocaleString(undefined,{maximumFractionDigits:6,minimumFractionDigits:2});
+}
+const isAddr = a => /^0x[a-fA-F0-9]{40}$/.test(a||'');
+const shortAddr = a => a ? a.slice(0,6)+'...'+a.slice(-4) : '';
+function fmtTime(s){
+  if(s<=0) return '0s';
+  const d=s/86400|0, h=(s%86400)/3600|0, m=(s%3600)/60|0, sec=s%60;
+  let o='';
+  if(d) o+=d+'d ';
+  if(h||d) o+=h+'h ';
+  if(m||h||d) o+=m+'m ';
+  if(sec&&!d&&!h) o+=sec+'s';
+  return o.trim();
+}
+function fmtCustomTime({d,h,m,s}){
+  const D=parseInt(d)||0,H=parseInt(h)||0,M=parseInt(m)||0,S=parseInt(s)||0;
+  const t=D*86400+H*3600+M*60+S;
+  if(t<=0) return {seconds:0,display:'0S'};
+  let o='';
+  if(D) o+=D+'D ';
+  if(H) o+=H+'H ';
+  if(M) o+=M+'M ';
+  if(S||(!D&&!H&&!M)) o+=S+'S';
+  return {seconds:t,display:o.trim()};
+}
+function decodeId(big){
+  const b=typeof big==='bigint'?big:BigInt(big);
+  return { token: '0x'+(b&((1n<<160n)-1n)).toString(16).padStart(40,'0'), delay: Number(b>>160n) };
+}
+const rpc = (method, params) => window.ethereum.request({method, params});
+const sCall = d => rpc('eth_call', [{to:SLOW, data:d}, 'latest']);
+const tCall = (to, d) => rpc('eth_call', [{to, data:d}, 'latest']);
+const sendTx = async tx => {
+  if(!await ensureMainnet()) throw new Error('Switch to Ethereum mainnet');
+  return rpc('eth_sendTransaction', [tx]);
+};
+async function waitTx(hash){
+  const end = Date.now() + 600000;
+  while(Date.now() < end){
+    const r = await rpc('eth_getTransactionReceipt', [hash]);
+    if(r){
+      if(r.status !== '0x1') throw new Error('Transaction reverted');
+      return r;
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  throw new Error('Confirmation timed out');
+}
+const callOk = (to,data) => tCall(to,data).then(r => r && r!=='0x' ? r : null).catch(()=>null);
+function namehash(name){
+  let n='0x'+'0'.repeat(64);
+  if(!name) return n;
+  const enc = new TextEncoder();
+  for(const lab of name.toLowerCase().split('.').reverse()){
+    const labelHash = keccak256(enc.encode(lab));
+    n = keccak256(n + labelHash.slice(2));
+  }
+  return n;
+}
+async function ensResolve(name){
+  if(!name) return null;
+  const n=namehash(name);
+  const rh=await callOk(ENS_REG, SEL.resolver+n.slice(2));
+  if(!rh) return null;
+  const res='0x'+rh.slice(-40);
+  if(res===ZERO) return null;
+  const ah=await callOk(res, SEL.addr+n.slice(2));
+  if(!ah) return null;
+  const a='0x'+ah.slice(-40);
+  return a===ZERO ? null : a;
+}
+async function ensReverse(addr){
+  const n=namehash(addr.toLowerCase().slice(2)+'.addr.reverse');
+  const rh=await callOk(ENS_REG, SEL.resolver+n.slice(2));
+  if(!rh) return null;
+  const res='0x'+rh.slice(-40);
+  if(res===ZERO) return null;
+  const nh=await callOk(res, SEL.ensName+n.slice(2));
+  if(!nh) return null;
+  const [name]=decode(['string'],nh);
+  if(!name) return null;
+  const fwd=await ensResolve(name);
+  return fwd && fwd.toLowerCase()===addr.toLowerCase() ? name : null;
+}
+// WNS (wei.domains): single contract is both registry and resolver, so no
+// resolver-lookup hop. addr(bytes32) is the same selector ENS resolvers use.
+async function wnsResolve(name){
+  if(!name) return null;
+  const n=namehash(name);
+  const ah=await callOk(WNS, SEL.addr+n.slice(2));
+  if(!ah) return null;
+  const a='0x'+ah.slice(-40);
+  return a===ZERO ? null : a;
+}
+async function wnsReverse(addr){
+  const ah=await callOk(WNS, SEL.wnsReverse+padL(addr));
+  if(!ah) return null;
+  const [name]=decode(['string'],ah);
+  return name || null;
+}
+// Dispatch by TLD: `.wei` → WNS, anything else → ENS (which also handles
+// non-`.eth` TLDs via wildcards). Reverse tries WNS first, then ENS.
+const resolveName = name =>
+  name.toLowerCase().endsWith('.wei') ? wnsResolve(name) : ensResolve(name);
+const reverseAny = async addr => (await wnsReverse(addr)) || (await ensReverse(addr));
+const S = {
+  account:null, ensName:null, chain:null,
+  token:null, symbol:null, amount:null, delay:null, delayDisplay:null,
+  resolved:null, resolving:false,
+  view:'home',
+  step:0,
+  tab:'outbound',
+  out:[], inb:[], loading:false,
+  ens:{}, meta:{},
+  progressTimer:null,
+};
+const el = {};
+['themeBtn','walletBtn','sendBox','takeBox','cryptoGrid',
+ 'amountRow','timeRow','customAmountOpt','customTimeOpt','customTokenOpt',
+ 'amountModal','timeModal','confirmModal','approveModal','tokenModal',
+ 'amountInput','amountApply','dInput','hInput','mInput','sInput','timeApply',
+ 'tokenInput','tokenStatus','tokenApply',
+ 'summary','recipientInput','ens','confirmBtn','approveText','approveBtn',
+ 'tabs','take','loading','loadingText','toast'].forEach(k=>el[k]=$(k));
+function toast(msg, ms=3000){
+  el.toast.textContent=msg;
+  el.toast.classList.add('on');
+  clearTimeout(toast.t);
+  toast.t=setTimeout(()=>el.toast.classList.remove('on'), ms);
+}
+function showLoad(msg='Processing...'){ el.loadingText.textContent=msg; el.loading.classList.add('on'); }
+function hideLoad(){ el.loading.classList.remove('on'); }
+function showModal(m){ m.classList.add('on'); }
+function hideModal(m){ m.classList.remove('on'); }
+function hideAllModals(){ document.querySelectorAll('.modal.on').forEach(m=>m.classList.remove('on')); }
+const tokenColor = a => `hsl(${parseInt(a.slice(2,8),16)%360},55%,45%)`;
+function render(){
+  el.sendBox.classList.toggle('on', S.view==='send');
+  el.takeBox.classList.toggle('on', S.view==='take');
+  el.cryptoGrid.classList.toggle('on', S.view==='send');
+  el.amountRow.classList.toggle('on',  S.view==='send' && S.step>=1);
+  el.timeRow.classList.toggle('on',    S.view==='send' && S.step>=2);
+  el.customTokenOpt.classList.toggle('on', S.view==='send');
+  const isCustomTok = S.token && !document.querySelector(`.crypto[data-token="${S.token}" i]`);
+  el.customTokenOpt.classList.toggle('sel', isCustomTok);
+  el.customTokenOpt.style.background = isCustomTok ? tokenColor(S.token) : '';
+  el.customTokenOpt.textContent = isCustomTok ? S.symbol : '+ CUSTOM TOKEN';
+  el.cryptoGrid.classList.toggle('dim', isCustomTok);
+  el.tabs.classList.toggle('on', S.view==='take');
+  el.take.classList.toggle('on', S.view==='take');
+  if(S.view!=='send'){ hideAllModals(); }
+  if(S.view==='take') renderTransfers();
+  document.querySelectorAll('.crypto').forEach(c=>c.classList.toggle('sel', S.token && c.dataset.token.toLowerCase()===S.token.toLowerCase()));
+  const customAmt = S.amount && !document.querySelector(`#amountRow [data-amount="${S.amount}"]`);
+  document.querySelectorAll('#amountRow .opt').forEach(o=>{
+    const v=o.dataset.amount, on = v && parseFloat(v)===S.amount;
+    o.classList.toggle('sel', on || (o===el.customAmountOpt && customAmt));
+  });
+  const customDly = S.delay && !document.querySelector(`#timeRow [data-time="${S.delay}"]`);
+  document.querySelectorAll('#timeRow .opt').forEach(o=>{
+    const v=o.dataset.time, on = v && parseInt(v)===S.delay;
+    o.classList.toggle('sel', on || (o===el.customTimeOpt && customDly));
+  });
+  el.customAmountOpt.textContent = customAmt ? fmtNum(S.amount) : '???';
+  el.customTimeOpt.textContent = customDly ? S.delayDisplay : 'CUSTOM';
+}
+function resetForm(){
+  S.token=S.symbol=null; S.amount=S.delay=S.delayDisplay=null;
+  S.resolved=null; S.resolving=false; S.step=0;
+  el.recipientInput.value=''; el.ens.textContent=''; el.ens.className='ens';
+  el.amountInput.value=''; el.dInput.value=el.hInput.value=el.mInput.value=el.sInput.value='';
+}
+function setView(v){
+  if(S.view===v) v='home';
+  S.view=v;
+  if(v==='home') resetForm();
+  if(v!=='take') clearProgressTimer();
+  render();
+}
+const tokSym = sym => ['ETH','USDC','USDT','BOLD'].includes(sym) ? sym : 'other';
+function renderTransfers(){
+  const list = S.tab==='outbound' ? S.out : S.inb;
+  const c = el.take;
+  c.innerHTML='';
+  if(S.loading){
+    c.innerHTML = '<div class="empty"><div class="spinner" style="margin:auto"></div><p style="margin-top:15px">Loading transfers...</p></div>';
+    return;
+  }
+  if(!list.length){
+    c.innerHTML = `<div class="empty">No ${S.tab} transfers.</div>`;
+    return;
+  }
+  // Group by token address so multiple unknown tokens don't merge under '???'.
+  const groups = new Map();
+  for(const t of list){
+    const k = t.token.toLowerCase();
+    if(!groups.has(k)) groups.set(k, {sym:t.symbol, token:t.token, items:[]});
+    groups.get(k).items.push(t);
+  }
+  for(const [, g] of groups){
+    const head=document.createElement('div');
+    head.className='label';
+    head.textContent = (g.sym==='???' ? shortAddr(g.token) : g.sym) + ' Transfers';
+    c.appendChild(head);
+    const line=document.createElement('div');
+    line.className='line';
+    const sym = tokSym(g.sym);
+    line.dataset.sym = sym;
+    if(sym==='other') line.style.background = tokenColor(g.token);
+    for(const t of g.items){
+      const {bar, arr} = makeArrow(t, g.sym);
+      line.appendChild(bar);
+      line.appendChild(arr);
+    }
+    c.appendChild(line);
+  }
+  ensureProgressTimer();
+}
+function makeArrow(t, sym){
+  const now=Date.now()/1000|0;
+  const progress=Math.min(100, ((now-t.timestamp)/t.delay)*100);
+  const expired = now >= t.unlockTime;
+  const inbReady = S.tab==='inbound' && expired;
+  const clawable = S.tab==='outbound' && now >= t.unlockTime+GRACE;
+  const bar=document.createElement('div');
+  bar.className='bar';
+  bar.dataset.id=t.id;
+  bar.style.width=Math.min(100,progress)+'%';
+  const arr=document.createElement('div');
+  arr.className='arrow' + (inbReady||clawable?' done':'');
+  arr.textContent = inbReady ? '★' : clawable ? '↩' : !expired ? '➤' : '✓';
+  arr.dataset.id=t.id; arr.dataset.ts=t.timestamp; arr.dataset.delay=t.delay;
+  arr.dataset.expired = expired ? '1' : '';
+  arr.dataset.clawable = clawable ? '1' : '';
+  arr.style.left=Math.min(95,progress)+'%';
+  const direction = S.tab==='outbound' ? 'To' : 'From';
+  const counterparty = S.tab==='outbound' ? t.to : t.from;
+  const tip = document.createElement('div');
+  tip.className = 'tip';
+  const status = inbReady ? 'Ready to claim'
+    : clawable ? 'Ready to recover'
+    : S.tab==='outbound' && expired ? 'Awaiting recipient'
+    : `${fmtTime(t.unlockTime - now)} remaining`;
+  const rows = [
+    ['Amount:', `${fmtNum(t.amount)} ${sym}`, false],
+    [`${direction}:`, shortAddr(counterparty), false],
+    ['Status:', status, inbReady||clawable],
+    ['Delay:', fmtTime(t.delay), false],
+  ];
+  if(t.guardianPending && S.tab==='outbound' && !expired){
+    rows.push(['Guardian:', '⏳ Required for reclaim', false]);
+  }
+  for(const [k,v,green] of rows){
+    const tt = document.createElement('div'); tt.className='tt';
+    const lbl = document.createElement('span'); lbl.className='tl'; lbl.textContent=k;
+    const val = document.createElement('span'); val.textContent=v;
+    if(green) val.style.color='#4caf50';
+    tt.appendChild(lbl); tt.appendChild(val); tip.appendChild(tt);
+  }
+  arr.appendChild(tip);
+  arr.onclick = e => {
+    e.stopPropagation();
+    const N = Date.now()/1000|0;
+    if(S.tab==='inbound' && N>=t.unlockTime){
+      if(confirm(`Claim ${fmtNum(t.amount)} ${sym}?`)) claim(t);
+    } else if(S.tab==='outbound' && N<t.unlockTime){
+      if(confirm(`Reverse and reclaim ${fmtNum(t.amount)} ${sym}?`)) reverseAndWithdraw(t);
+    } else if(S.tab==='outbound' && N>=t.unlockTime+GRACE){
+      if(confirm(`Recover ${fmtNum(t.amount)} ${sym}?`)) clawback(t);
+    }
+  };
+  return {bar, arr};
+}
+function ensureProgressTimer(){
+  if(S.progressTimer) return;
+  S.progressTimer = setInterval(updateProgress, 5000);
+}
+function clearProgressTimer(){
+  if(S.progressTimer){ clearInterval(S.progressTimer); S.progressTimer=null; }
+}
+function updateProgress(){
+  if(S.view!=='take'){ clearProgressTimer(); return; }
+  const now=Date.now()/1000|0;
+  let stale=false;
+  document.querySelectorAll('.arrow').forEach(a=>{
+    const ts=+a.dataset.ts, d=+a.dataset.delay;
+    const p=Math.min(100,((now-ts)/d)*100);
+    a.style.left=Math.min(95,p)+'%';
+    const bar = a.parentElement.querySelector(`.bar[data-id="${a.dataset.id}"]`);
+    if(bar) bar.style.width=Math.min(100,p)+'%';
+    if(!a.dataset.expired && now>=ts+d) stale=true;
+    if(S.tab==='outbound' && !a.dataset.clawable && now>=ts+d+GRACE) stale=true;
+  });
+  if(stale) renderTransfers();
+}
+async function ensureMainnet(){
+  const id = await rpc('eth_chainId', []);
+  if(+id === 1) return true;
+  try { await rpc('wallet_switchEthereumChain', [{chainId: MAINNET}]); return true; }
+  catch(e){ return false; }
+}
+async function connect(){
+  if(!window.ethereum){
+    window.open('https://metamask.io/download.html', '_blank');
+    return false;
+  }
+  try {
+    const accs = await rpc('eth_requestAccounts', []);
+    if(!accs?.length) return false;
+    if(!await ensureMainnet()){ toast('Switch to Ethereum mainnet'); return false; }
+    S.account = accs[0];
+    reverseAny(S.account).then(n => { S.ensName = n; updateWallet(); }).catch(()=>{});
+    updateWallet();
+    if(S.view==='take') loadTransfers();
+    return true;
+  } catch(e){ toast(e.message || 'Connect failed'); return false; }
+}
+function disconnect(){
+  S.account = S.ensName = null; S.out = S.inb = [];
+  setView('home');
+  updateWallet();
+  toast('Disconnected');
+}
+function updateWallet(){
+  el.walletBtn.textContent = S.account ? (S.ensName || shortAddr(S.account)) : 'Connect';
+}
+async function resolveRecipient(input){
+  S.resolving=true;
+  el.ens.textContent='Resolving...'; el.ens.className='ens';
+  const stale = () => el.recipientInput.value.trim() !== input;
+  try {
+    if(isAddr(input)){
+      const cached=S.ens[input.toLowerCase()];
+      const name = cached!==undefined ? cached : await reverseAny(input);
+      if(stale()) return false;
+      S.ens[input.toLowerCase()]=name||null;
+      S.resolved=input;
+      el.ens.textContent = name ? `Resolved to: ${name}` : 'Valid address';
+      el.ens.className='ens ok';
+      return true;
+    }
+    if(input.includes('.')){
+      const cached=S.ens[input.toLowerCase()];
+      const a = cached!==undefined ? cached : await resolveName(input);
+      if(stale()) return false;
+      S.ens[input.toLowerCase()]=a||null;
+      if(a && isAddr(a)){
+        S.resolved=a;
+        el.ens.textContent=`Resolved to: ${shortAddr(a)}`;
+        el.ens.className='ens ok';
+        return true;
+      }
+      el.ens.textContent='Could not resolve name';
+      el.ens.className='ens err';
+      return false;
+    }
+    el.ens.textContent='Invalid address or name';
+    el.ens.className='ens err';
+    return false;
+  } finally { S.resolving=false; }
+}
+async function tokenMeta(addr){
+  const k=addr.toLowerCase();
+  if(S.meta[k]) return S.meta[k];
+  if(k===ZERO) return S.meta[k] = {symbol:'ETH', decimals:18};
+  try {
+    const [sh,dh] = await Promise.all([tCall(addr,SEL.symbol), tCall(addr,SEL.decimals)]);
+    const [symbol] = decode(['string'], sh);
+    const [decimals] = decode(['uint256'], dh);
+    return S.meta[k] = {symbol, decimals: Number(decimals)};
+  } catch(e){
+    return S.meta[k] = {symbol:'???', decimals:18};
+  }
+}
+async function checkAllowance(token, owner, need){
+  if(token===ZERO) return true;
+  const r=await tCall(token, cd(SEL.allowance,['address','address'],[owner,SLOW]));
+  return decode(['uint256'],r)[0] >= need;
+}
+async function loadTransfers(){
+  if(!S.account) return;
+  S.loading=true; renderTransfers();
+  try {
+    const [oh,ih,gh] = await Promise.all([
+      sCall(cd(SEL.getOut,['address'],[S.account])),
+      sCall(cd(SEL.getIn,['address'],[S.account])),
+      sCall(cd(SEL.guardians,['address'],[S.account])),
+    ]);
+    const [oIds] = decode(['uint256[]'], oh);
+    const [iIds] = decode(['uint256[]'], ih);
+    const hasGuardian = ('0x'+gh.slice(-40)).toLowerCase() !== ZERO;
+    const all = Array.from(new Map([...oIds,...iIds].map(id=>[id.toString(),id])).values());
+    const pts = await Promise.all(all.map(id => sCall(cd(SEL.pendingTransfers,['uint256'],[id]))));
+    const map = new Map();
+    all.forEach((id,i)=>{
+      const [ts,from,to,tid,amt] = decode(['uint256','address','address','uint256','uint256'], pts[i]);
+      map.set(id.toString(), {ts,from,to,tid,amt});
+    });
+    const tokens = new Set();
+    for(const v of map.values()) tokens.add(decodeId(v.tid).token);
+    await Promise.all([...tokens].map(tokenMeta));
+    const build = id => {
+      const k=id.toString(), pt=map.get(k);
+      if(!pt || pt.ts===0n) return null;
+      const {token,delay} = decodeId(pt.tid);
+      const m = S.meta[token.toLowerCase()] || {symbol:'???',decimals:18};
+      const timestamp = Number(pt.ts);
+      return {
+        id:k, from:pt.from, to:pt.to, tokenId:pt.tid.toString(),
+        token, symbol:m.symbol,
+        amount: parseFloat(formatUnits(pt.amt, m.decimals)),
+        amountRaw: pt.amt,
+        timestamp, delay, unlockTime: timestamp+delay,
+      };
+    };
+    S.out = oIds.map(build).filter(Boolean).sort((a,b)=>a.unlockTime-b.unlockTime);
+    S.inb = iIds.map(build).filter(Boolean).sort((a,b)=>a.unlockTime-b.unlockTime);
+    if(hasGuardian){
+      const flat = [...S.out, ...S.inb];
+      const need = await Promise.all(flat.map(t =>
+        sCall(cd(SEL.isGuardianApprovalNeeded,
+          ['address','address','uint256','uint256'],
+          [S.account, S.account, BigInt(t.tokenId), t.amountRaw]))));
+      need.forEach((r,i) => { flat[i].guardianPending = decode(['uint256'], r)[0] !== 0n; });
+    }
+  } catch(e){
+    toast('Failed to load transfers');
+  } finally {
+    S.loading=false; renderTransfers();
+  }
+}
+async function deposit(){
+  showLoad('Creating time-locked transfer...');
+  try {
+    const isETH = S.token===ZERO;
+    const meta = isETH ? {decimals:18} : await tokenMeta(S.token);
+    const wei = parseUnits(S.amount, meta.decimals);
+    const data = cd(SEL.depositTo,
+      ['address','address','uint256','uint96','bytes'],
+      [isETH?ZERO:S.token, S.resolved, isETH?0n:wei, BigInt(S.delay), '0x']);
+    const tx = {from:S.account, to:SLOW, data};
+    if(isETH) tx.value = '0x'+wei.toString(16);
+    const hash = await sendTx(tx);
+    showLoad('Confirming...');
+    await waitTx(hash);
+    toast('Sent! Funds locked in SLOW.', 5000);
+    setView('home');
+    loadTransfers();
+  } catch(e){
+    toast(e.message || 'Transaction failed');
+  } finally { hideLoad(); }
+}
+async function claim(t){
+  const now = Date.now()/1000|0;
+  if(now < t.unlockTime){ toast(`${fmtTime(t.unlockTime-now)} remaining`); return; }
+  showLoad('Claiming...');
+  try {
+    const data = cd(SEL.claim, ['uint256'], [BigInt(t.id)]);
+    const hash = await sendTx({from:S.account, to:SLOW, data});
+    showLoad('Confirming...');
+    await waitTx(hash);
+    toast('Claimed!', 5000);
+    loadTransfers();
+  } catch(e){ toast(e.message || 'Failed'); }
+  finally { hideLoad(); }
+}
+async function clawback(t){
+  const now = Date.now()/1000|0;
+  const ready = t.unlockTime + GRACE;
+  if(now < ready){ toast(`Recovery ready in ${fmtTime(ready-now)}`); return; }
+  showLoad('Recovering...');
+  try {
+    const data = cd(SEL.clawback, ['uint256'], [BigInt(t.id)]);
+    const hash = await sendTx({from:S.account, to:SLOW, data});
+    showLoad('Confirming...');
+    await waitTx(hash);
+    toast('Recovered!', 5000);
+    loadTransfers();
+  } catch(e){ toast(e.message || 'Failed'); }
+  finally { hideLoad(); }
+}
+async function reverseAndWithdraw(t){
+  const now = Date.now()/1000|0;
+  if(now >= t.unlockTime){ toast("Timelock expired — can't reverse"); return; }
+  showLoad('Reversing transfer...');
+  try {
+    const r = cd(SEL.reverse, ['uint256'], [BigInt(t.id)]);
+    const w = cd(SEL.withdrawFrom,
+      ['address','address','uint256','uint256'],
+      [t.from, S.account, BigInt(t.tokenId), t.amountRaw]);
+    const data = cd(SEL.multicall, ['bytes[]'], [[r, w]]);
+    const hash = await sendTx({from:S.account, to:SLOW, data});
+    showLoad('Confirming...');
+    await waitTx(hash);
+    toast('Reversed and returned!', 5000);
+    loadTransfers();
+  } catch(e){ toast(e.message || 'Failed'); }
+  finally { hideLoad(); }
+}
+async function handleConfirm(){
+  if(!S.resolved){
+    if(S.resolving){ toast('Resolving address...'); return; }
+    if(!await resolveRecipient(el.recipientInput.value.trim())){ el.recipientInput.focus(); return; }
+  }
+  if(!S.account){
+    toast('Connecting wallet...');
+    if(!await connect()) return;
+  }
+  if(!await ensureMainnet()){ toast('Switch to Ethereum mainnet'); return; }
+  hideModal(el.confirmModal);
+  if(S.token!==ZERO){
+    const m = await tokenMeta(S.token);
+    const wei = parseUnits(S.amount, m.decimals);
+    if(!await checkAllowance(S.token, S.account, wei)){
+      el.approveText.textContent = `Allow SLOW to use your ${S.symbol}.`;
+      showModal(el.approveModal);
+      return;
+    }
+  }
+  await deposit();
+}
+el.themeBtn.onclick = () => {
+  document.body.classList.toggle('light');
+  el.themeBtn.textContent = document.body.classList.contains('light') ? '☀' : '☾';
+};
+el.walletBtn.onclick = () => S.account ? disconnect() : connect();
+el.sendBox.onclick = () => {
+  if(S.view==='send'){ setView('home'); return; }
+  setView('send');
+};
+el.takeBox.onclick = async () => {
+  if(S.view==='take'){ setView('home'); return; }
+  if(!S.account){
+    if(!await connect()) return;
+  }
+  setView('take');
+  loadTransfers();
+};
+el.cryptoGrid.addEventListener('click', e => {
+  const b = e.target.closest('.crypto'); if(!b) return;
+  S.token = b.dataset.token.toLowerCase();
+  S.symbol = b.dataset.symbol;
+  S.step = Math.max(S.step, 1);
+  render();
+});
+el.amountRow.addEventListener('click', e => {
+  const o = e.target.closest('.opt'); if(!o) return;
+  if(o===el.customAmountOpt){
+    el.amountInput.value = S.amount && !o.dataset.amount ? S.amount : '';
+    showModal(el.amountModal); el.amountInput.focus();
+    return;
+  }
+  S.amount = parseFloat(o.dataset.amount);
+  S.step = Math.max(S.step, 2);
+  render();
+});
+el.timeRow.addEventListener('click', e => {
+  const o = e.target.closest('.opt'); if(!o) return;
+  if(o===el.customTimeOpt){ showModal(el.timeModal); el.dInput.focus(); return; }
+  S.delay = parseInt(o.dataset.time);
+  S.delayDisplay = o.dataset.display;
+  openConfirmation();
+});
+el.amountApply.onclick = () => {
+  const v = parseFloat(el.amountInput.value);
+  if(isNaN(v)||v<=0){ toast('Enter amount > 0'); return; }
+  S.amount = v;
+  S.step = Math.max(S.step, 2);
+  hideModal(el.amountModal);
+  render();
+};
+el.customTokenOpt.onclick = () => {
+  el.tokenInput.value = '';
+  el.tokenStatus.textContent = '';
+  el.tokenStatus.className = 'ens';
+  showModal(el.tokenModal);
+  el.tokenInput.focus();
+};
+el.tokenApply.onclick = async () => {
+  const addr = el.tokenInput.value.trim();
+  if(!isAddr(addr)){
+    el.tokenStatus.textContent='Invalid address'; el.tokenStatus.className='ens err'; return;
+  }
+  el.tokenStatus.textContent='Loading...'; el.tokenStatus.className='ens';
+  const meta = await tokenMeta(addr);
+  if(!meta.symbol || meta.symbol==='???'){
+    el.tokenStatus.textContent='Not a valid ERC-20'; el.tokenStatus.className='ens err'; return;
+  }
+  S.token = addr.toLowerCase(); S.symbol = meta.symbol;
+  S.step = Math.max(S.step, 1);
+  hideModal(el.tokenModal);
+  render();
+};
+el.tokenInput.addEventListener('keydown', e => { if(e.key==='Enter') el.tokenApply.click(); });
+el.timeApply.onclick = () => {
+  const r = fmtCustomTime({d:el.dInput.value,h:el.hInput.value,m:el.mInput.value,s:el.sInput.value});
+  if(!r.seconds){ toast('Enter delay > 0s'); return; }
+  if(r.seconds > 3155760000){ toast('Max delay 100 years'); return; }
+  S.delay = r.seconds; S.delayDisplay = r.display;
+  hideModal(el.timeModal);
+  openConfirmation();
+};
+function openConfirmation(){
+  el.summary.textContent = `${fmtNum(S.amount)} ${S.symbol} · ${S.delayDisplay}`;
+  showModal(el.confirmModal);
+  el.recipientInput.focus();
+  render();
+}
+let ensTimer;
+el.recipientInput.addEventListener('input', () => {
+  const v = el.recipientInput.value.trim();
+  S.resolved = null;
+  if(!v){ el.ens.textContent=''; el.ens.className='ens'; return; }
+  clearTimeout(ensTimer);
+  ensTimer = setTimeout(() => resolveRecipient(v), 500);
+});
+el.recipientInput.addEventListener('keydown', e => { if(e.key==='Enter') el.confirmBtn.click(); });
+el.confirmBtn.onclick = handleConfirm;
+el.approveBtn.onclick = async () => {
+  showLoad('Approving...');
+  try {
+    const max = (1n<<256n)-1n;
+    const data = cd(SEL.approve, ['address','uint256'], [SLOW, max]);
+    const hash = await sendTx({from:S.account, to:S.token, data});
+    showLoad('Confirming approval...');
+    await waitTx(hash);
+    toast('Approved!');
+    hideModal(el.approveModal);
+    await deposit();
+  } catch(e){ toast(e.message || 'Approval failed'); }
+  finally { hideLoad(); }
+};
+el.tabs.addEventListener('click', e => {
+  const t = e.target.closest('.tab'); if(!t) return;
+  S.tab = t.dataset.tab;
+  el.tabs.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on', x===t));
+  renderTransfers();
+});
+document.addEventListener('click', e => {
+  document.querySelectorAll('.modal.on').forEach(m => {
+    if(e.target===m) m.classList.remove('on');
+  });
+});
+window.ethereum?.on?.('accountsChanged', accs => {
+  if(!accs?.length){ disconnect(); return; }
+  S.account = accs[0]; S.ensName = null;
+  reverseAny(S.account).then(n => { S.ensName = n; updateWallet(); }).catch(()=>{});
+  updateWallet();
+  if(S.view==='take') loadTransfers();
+});
+window.ethereum?.on?.('chainChanged', id => {
+  if(+id === 1){
+    if(S.account && S.view==='take') loadTransfers();
+  } else if(S.account){
+    toast('Switched off Ethereum mainnet');
+  }
+});
+window.addEventListener('focus', () => { if(S.view==='take' && S.account) loadTransfers(); });
+if(!window.ethereum) el.walletBtn.textContent = 'Install Wallet';
+render();
+})();
+</script>
+</body>
+</html>

@@ -1,46 +1,58 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.34;
 
 import {Base64} from "@solady/src/utils/Base64.sol";
 import {SSTORE2} from "@solady/src/utils/SSTORE2.sol";
 import {ERC1155} from "@solady/src/tokens/ERC1155.sol";
-import {LibString} from "@soledge/src/utils/LibString.sol";
+import {LibString} from "@solady/src/utils/LibString.sol";
 import {Multicallable} from "@solady/src/utils/Multicallable.sol";
 import {SafeTransferLib} from "@solady/src/utils/SafeTransferLib.sol";
-import {ReentrancyGuardTransient} from "@solady/src/utils/ReentrancyGuardTransient.sol";
-import {MetadataReaderLib} from "@solady/src/utils/MetadataReaderLib.sol";
 import {EnumerableSetLib} from "@solady/src/utils/EnumerableSetLib.sol";
+import {MetadataReaderLib} from "@solady/src/utils/MetadataReaderLib.sol";
+import {ReentrancyGuardTransient} from "@solady/src/utils/ReentrancyGuardTransient.sol";
 
-/// @notice Timelocked token sends
-/// @author z0r0z.eth for nani.eth
-/// @dev Tokenized representation
-/// of the canonical timelock and
-/// guardian for safer execution.
-/// @dev Main features:
-///      - Deposits and transfers create timelocked balance
-///      - Locked balances must be unlocked upon the expiry
-///      - Only unlocked balances can be spent in transfer
-///      - Guardian approval can also be added to transfer
+/// @notice Timelocked token sends with optional guardian co-sign and tip-sponsored settlement.
+/// @dev ERC1155 ids encode `(token, delay)`. Senders can `reverse` during the timelock
+/// or `clawback` after a 30-day post-expiry grace. Recipients settle via `unlock` +
+/// `withdrawFrom`, or `claim` for direct underlying payout. `depositToWithTip` posts
+/// a relayer tip on the gate so any keeper can settle without recipient approval.
+/// Guardian is a self-imposed co-sign mode on `safeTransferFrom` / `withdrawFrom`.
 contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
+    using EnumerableSetLib for EnumerableSetLib.Uint256Set;
     using MetadataReaderLib for address;
     using SafeTransferLib for address;
     using LibString for address;
     using LibString for uint256;
-    using EnumerableSetLib for EnumerableSetLib.Uint256Set;
 
     event Unlocked(address indexed user, uint256 indexed id, uint256 indexed amount);
     event TransferApproved(
         address indexed guardian, address indexed user, uint256 indexed transferId
     );
+    event TransferApprovalRevoked(
+        address indexed guardian, address indexed user, uint256 indexed transferId
+    );
     event TransferPending(uint256 indexed transferId, uint256 indexed delay);
     event GuardianSet(address indexed user, address indexed guardian);
+    event GuardianChangeProposed(
+        address indexed user, address indexed newGuardian, uint256 effectiveAt
+    );
+    event GuardianChangeCanceled(address indexed user);
+    event TransferClawedBack(uint256 indexed transferId);
+    event TransferReversed(uint256 indexed transferId);
+    event TransferClaimed(uint256 indexed transferId);
 
-    error GuardianCooldownNotElapsed();
     error GuardianApprovalRequired();
+    error NoGuardianChangePending();
+    error ClaimBlockedByGuardian();
+    error GuardianChangeNotReady();
+    error BatchTransferDisabled();
     error TransferDoesNotExist();
     error TimelockNotExpired();
+    error ClawbackNotReady();
+    error InvalidRecipient();
     error TimelockExpired();
     error InvalidDeposit();
+    error InvalidAmount();
     error Unauthorized();
 
     struct PendingTransfer {
@@ -51,7 +63,29 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         uint256 amount;
     }
 
-    uint256 internal constant _GUARDIAN_COOLDOWN = 1 days; // Default to avoid flash attacks.
+    /// @dev Pending guardian rotation. While `effectiveAt != 0`, a change is in flight.
+    /// Either the user or the current guardian can call `cancelGuardianChange` before
+    /// `effectiveAt` to veto. After `effectiveAt`, anyone can call `commitGuardian` to
+    /// apply the change. Packs into a single slot.
+    struct PendingGuardian {
+        address guardian; // 20 bytes
+        uint96 effectiveAt; // 12 bytes
+    }
+
+    uint256 internal constant _GUARDIAN_CHANGE_DELAY = 1 days; // Veto window for guardian rotation.
+    uint256 internal constant _CLAWBACK_GRACE = 30 days; // Wait after expiry before sender can clawback.
+
+    // Op-type byte mixed into guardian-approval preimages. Distinguishes wrapper
+    // transfers from raw withdrawals so a guardian approval for one cannot be
+    // consumed as the other at the same `(from, to, id, amount)`.
+    uint8 internal constant _OP_TRANSFER = 0;
+    uint8 internal constant _OP_WITHDRAW = 1;
+
+    address internal constant _HTML_REGISTRY = 0xFa11bacCdc38022dbf8795cC94333304C9f22722;
+
+    mapping(address user => EnumerableSetLib.Uint256Set) internal _outboundTransfers;
+
+    mapping(address user => EnumerableSetLib.Uint256Set) internal _inboundTransfers;
 
     mapping(address user => mapping(uint256 id => uint256)) public unlockedBalances;
 
@@ -63,23 +97,26 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
     mapping(address user => address) public guardians;
 
+    mapping(address user => PendingGuardian) public pendingGuardian;
+
     mapping(address user => uint256) public nonces;
 
-    mapping(address user => EnumerableSetLib.Uint256Set) internal _outboundTransfers;
+    /// @notice CREATE2-deployed auto-claim forwarder. Approve via
+    /// `setApprovalForAll(slow.gate(), true)` to opt into keeper-driven settlement.
+    address public immutable gate;
 
-    mapping(address user => EnumerableSetLib.Uint256Set) internal _inboundTransfers;
-
-    // ON-CHAIN DAPP
-
-    address public immutable htmlChunk1;
-    address public immutable htmlChunk2;
+    address internal immutable htmlChunk1;
+    address internal immutable htmlChunk2;
 
     constructor(bytes memory part1, bytes memory part2) payable {
-        htmlChunk1 = SSTORE2.write(part1);
-        htmlChunk2 = SSTORE2.write(part2);
+        htmlChunk1 = SSTORE2.writeDeterministic(part1, bytes32(uint256(1)));
+        htmlChunk2 = SSTORE2.writeDeterministic(part2, bytes32(uint256(2)));
+        gate = address(new SLOWGate{salt: bytes32(0)}());
+        IHtmlRegistry(_HTML_REGISTRY)
+            .setHtmlAsTarget(address(this), string(bytes.concat(part1, part2)));
     }
 
-    /// @notice Returns the full SLOW dapp HTML reassembled from on-chain SSTORE2 chunks.
+    /// @notice Returns the full SLOW dapp HTML reassembled from onchain SSTORE2 chunks.
     function html() public view returns (string memory) {
         return string(bytes.concat(SSTORE2.read(htmlChunk1), SSTORE2.read(htmlChunk2)));
     }
@@ -100,19 +137,45 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
     // VIEWERS
 
+    /// @notice Hash matching the next `safeTransferFrom` (or `depositTo`) by `from`
+    /// at the current `nonces[from]` / `lastGuardianChange[from]`. Use this for
+    /// guardian co-sign of wrapper transfers; use `predictWithdrawalId` for raw exits.
     function predictTransferId(address from, address to, uint256 id, uint256 amount)
         public
         view
         returns (uint256)
     {
-        return uint256(keccak256(abi.encodePacked(from, to, id, amount, nonces[from])));
+        return uint256(
+            keccak256(
+                abi.encodePacked(
+                    from, to, id, amount, nonces[from], lastGuardianChange[from], _OP_TRANSFER
+                )
+            )
+        );
+    }
+
+    /// @notice Hash matching the next `withdrawFrom` by `from` at the current
+    /// `nonces[from]` / `lastGuardianChange[from]`. The op-type byte separates
+    /// withdraw approvals from transfer approvals at the same `(from, to, id, amount)`.
+    function predictWithdrawalId(address from, address to, uint256 id, uint256 amount)
+        public
+        view
+        returns (uint256)
+    {
+        return uint256(
+            keccak256(
+                abi.encodePacked(
+                    from, to, id, amount, nonces[from], lastGuardianChange[from], _OP_WITHDRAW
+                )
+            )
+        );
     }
 
     function decodeId(uint256 id) public pure returns (address token, uint256 delay) {
         (token, delay) = (address(uint160(id)), id >> 160);
     }
 
-    function encodeId(address token, uint256 delay) public pure returns (uint256 id) {
+    function encodeId(address token, uint96 delay) public pure returns (uint256 id) {
         id = uint256(uint160(token)) | (uint256(delay) << 160);
     }
 
@@ -126,7 +189,7 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
             if (pt.timestamp == 0) return (false, TransferDoesNotExist.selector);
 
-            if (block.timestamp > pt.timestamp + (pt.id >> 160)) {
+            if (block.timestamp >= pt.timestamp + (pt.id >> 160)) {
                 return (false, TimelockExpired.selector);
             }
 
@@ -141,19 +204,57 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     {
         return guardians[user] == address(0)
             ? false
-            : !guardianApproved[uint256(keccak256(abi.encodePacked(user, to, id, amount, nonces[user])))];
+            : !guardianApproved[
+                uint256(
+                    keccak256(
+                        abi.encodePacked(
+                            user,
+                            to,
+                            id,
+                            amount,
+                            nonces[user],
+                            lastGuardianChange[user],
+                            _OP_TRANSFER
+                        )
+                    )
+                )
+            ];
     }
 
-    function canChangeGuardian(address user)
+    /// @notice Like `isGuardianApprovalNeeded` but for `withdrawFrom` instead of
+    /// `safeTransferFrom`. Distinct preimage; a transfer approval will not satisfy this.
+    function isWithdrawalApprovalNeeded(address user, address to, uint256 id, uint256 amount)
         public
         view
-        returns (bool canChange, uint256 cooldownEndsAt)
+        returns (bool needed)
     {
-        unchecked {
-            if (lastGuardianChange[user] == 0) return (true, 0);
-            cooldownEndsAt = lastGuardianChange[user] + _GUARDIAN_COOLDOWN;
-            canChange = block.timestamp >= cooldownEndsAt;
-        }
+        return guardians[user] == address(0)
+            ? false
+            : !guardianApproved[
+                uint256(
+                    keccak256(
+                        abi.encodePacked(
+                            user,
+                            to,
+                            id,
+                            amount,
+                            nonces[user],
+                            lastGuardianChange[user],
+                            _OP_WITHDRAW
+                        )
+                    )
+                )
+            ];
+    }
+
+    /// @notice Returns whether `setGuardian` would take effect immediately for `user`.
+    /// True when the user has no active guardian (first-time set or post-removal):
+    /// the change applies in one tx. False when a guardian is set: the change must
+    /// be proposed (`setGuardian`), wait `_GUARDIAN_CHANGE_DELAY`, then committed
+    /// (`commitGuardian`); the current guardian or the user can `cancelGuardianChange`
+    /// during the window.
+    function isGuardianChangeImmediate(address user) public view returns (bool) {
+        return guardians[user] == address(0);
     }
 
     // PENDING TRANSFER ENUMERATION
@@ -184,36 +285,102 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
     // GUARDIAN AUTH
 
-    function setGuardian(address guardian) public {
-        unchecked {
-            // Check if cooldown period has elapsed:
-            if (lastGuardianChange[msg.sender] != 0) {
-                require(
-                    block.timestamp >= lastGuardianChange[msg.sender] + _GUARDIAN_COOLDOWN,
-                    GuardianCooldownNotElapsed()
-                );
-            }
-
+    /// @notice Co-sign mode for `safeTransferFrom` / `withdrawFrom`. While
+    /// `guardians[user] != 0`, every outflow needs `approveTransfer` from that address.
+    /// @dev If the user has no active guardian, the change is immediate (first-time set
+    /// or post-removal). If the user already has an active guardian, the new guardian is
+    /// staged in `pendingGuardian` with a `_GUARDIAN_CHANGE_DELAY` veto window: either the
+    /// user OR the current guardian can `cancelGuardianChange` before `effectiveAt` to
+    /// block the rotation; after the delay, anyone can `commitGuardian` to apply it.
+    /// This is what protects already-wrapped balances against key compromise — a stolen
+    /// key cannot remove or replace a live guardian without a 24h veto window.
+    /// `setApprovalForAll` is the orthogonal "extend authority outward" primitive.
+    function setGuardian(address newGuardian) public {
+        if (guardians[msg.sender] == address(0)) {
+            // No active guardian — immediate. Clear any stale pending entry first
+            // so a leftover proposal can't get committed against the new state.
+            delete pendingGuardian[msg.sender];
             lastGuardianChange[msg.sender] = block.timestamp;
-            emit GuardianSet(msg.sender, guardians[msg.sender] = guardian);
+            emit GuardianSet(msg.sender, guardians[msg.sender] = newGuardian);
+        } else {
+            // Active guardian — propose; current guardian or user can veto in the window.
+            // Re-proposing overwrites any prior pending entry and resets the timer.
+            unchecked {
+                uint256 effectiveAt = block.timestamp + _GUARDIAN_CHANGE_DELAY;
+                pendingGuardian[msg.sender] = PendingGuardian(newGuardian, uint96(effectiveAt));
+                emit GuardianChangeProposed(msg.sender, newGuardian, effectiveAt);
+            }
         }
     }
 
+    /// @notice Apply a previously proposed guardian change after the delay has elapsed.
+    /// Permissionless: anyone can poke the commit (gas griefing only — the user already
+    /// proposed the change). `lastGuardianChange` updates here, atomically invalidating
+    /// every dangling guardian approval bound to the previous preimage.
+    function commitGuardian(address user) public {
+        PendingGuardian memory p = pendingGuardian[user];
+        require(p.effectiveAt != 0, NoGuardianChangePending());
+        require(block.timestamp >= p.effectiveAt, GuardianChangeNotReady());
+        delete pendingGuardian[user];
+        lastGuardianChange[user] = block.timestamp;
+        emit GuardianSet(user, guardians[user] = p.guardian);
+    }
+
+    /// @notice Veto a pending guardian change during the delay window. Callable by
+    /// `user` (so the legitimate owner can back out) or by `guardians[user]` (so a
+    /// live guardian can block a compromised-key rotation attempt). After the delay
+    /// expires this reverts — at that point only `commitGuardian` is valid, so a
+    /// hostile guardian cannot race the user's commit by repeatedly canceling.
+    function cancelGuardianChange(address user) public {
+        uint256 effectiveAt = pendingGuardian[user].effectiveAt;
+        require(effectiveAt != 0, NoGuardianChangePending());
+        require(block.timestamp < effectiveAt, GuardianChangeNotReady());
+        require(msg.sender == user || msg.sender == guardians[user], Unauthorized());
+        delete pendingGuardian[user];
+        emit GuardianChangeCanceled(user);
+    }
+
+    /// @notice Approve a precomputed transferId for `from`. Callable only by `guardians[from]`.
+    /// @dev `safeTransferFrom` and `withdrawFrom` use distinct preimages — the op-type byte
+    /// (`_OP_TRANSFER` vs `_OP_WITHDRAW`) is mixed into the hash — so a transfer approval
+    /// will not satisfy a withdrawal at the same `(from, to, id, amount)` and vice versa.
+    /// Use `predictTransferId` for the wrapper-transfer hash and `predictWithdrawalId` for
+    /// the raw-exit hash. Committing a guardian change (`commitGuardian`) bumps
+    /// `lastGuardianChange[from]` and atomically invalidates every dangling approval bound
+    /// to the prior preimage. Guardians enforcing op-specific policy must still verify
+    /// intent off-chain before approving — the on-chain split prevents cross-op consumption,
+    /// not malicious approval of the wrong op.
     function approveTransfer(address from, uint256 transferId) public {
         require(msg.sender == guardians[from], Unauthorized());
         guardianApproved[transferId] = true;
         emit TransferApproved(msg.sender, from, transferId);
     }
 
-    // BALANCE MANAGEMENT
+    /// @notice Retract a previously granted approval. Callable only by `guardians[from]`.
+    /// @dev Lets a guardian undo a single mistaken approval without rotating the whole
+    /// guardian (which atomically invalidates ALL approvals via `lastGuardianChange`).
+    /// Idempotent: revoking a nonexistent or already-consumed approval is a no-op.
+    function revokeApproval(address from, uint256 transferId) public {
+        require(msg.sender == guardians[from], Unauthorized());
+        delete guardianApproved[transferId];
+        emit TransferApprovalRevoked(msg.sender, from, transferId);
+    }
 
+    // UNLOCK
+
+    /// @notice After expiry, moves the pending transfer into `unlockedBalances[pt.to]`.
+    /// The wrapper stays at `pt.to`; outbound transfers re-lock per the id's encoded delay.
+    /// @dev Gated to `pt.to` or any operator approved via `setApprovalForAll`. Prevents
+    /// third-party griefers from frontrunning settlement and stranding the sender's
+    /// `clawback` path or the keeper's tip on `gate.claim`.
     function unlock(uint256 transferId) public nonReentrant {
         unchecked {
             PendingTransfer storage pt = pendingTransfers[transferId];
             require(pt.timestamp != 0, TransferDoesNotExist());
             uint256 id = pt.id;
-            require(block.timestamp > pt.timestamp + (id >> 160), TimelockNotExpired());
-            (uint256 amount, address from, address to) = (pt.amount, pt.from, pt.to);
+            require(block.timestamp >= pt.timestamp + (id >> 160), TimelockNotExpired());
+            (address from, address to, uint256 amount) = (pt.from, pt.to, pt.amount);
+            require(msg.sender == to || isApprovedForAll(to, msg.sender), Unauthorized());
             unlockedBalances[to][id] += amount;
             _outboundTransfers[from].remove(transferId);
             _inboundTransfers[to].remove(transferId);
@@ -222,30 +389,134 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         }
     }
 
+    /// @notice Auto-settle path. After expiry, burns the wrapper from `pt.to` and pays
+    /// the raw underlying directly to `pt.to`. Skips the unlocked-balance step.
+    /// @dev Callable by `pt.to` or any operator approved via `setApprovalForAll`. Default
+    /// is recipient-only; opt into auto-claim by approving a keeper. No third party can
+    /// force-unwrap a holder's wrapped position. Reverts when `pt.to` has a guardian
+    /// set — guardian-mode recipients settle via `unlock` + `withdrawFrom`, where the
+    /// raw exit is guardian-gated.
+    function claim(uint256 transferId) public nonReentrant {
+        PendingTransfer storage pt = pendingTransfers[transferId];
+        require(pt.timestamp != 0, TransferDoesNotExist());
+        address to = pt.to;
+        require(msg.sender == to || isApprovedForAll(to, msg.sender), Unauthorized());
+        _doClaim(transferId, pt);
+    }
+
+    /// @notice Sender-sponsored claim path. Skips the operator-approval check;
+    /// callable only by the gate, which only invokes this for transfers carrying
+    /// a relayer tip posted via `depositToWithTip`. Guardian veto still applies.
+    function claimTipped(uint256 transferId) public nonReentrant {
+        require(msg.sender == gate, Unauthorized());
+        PendingTransfer storage pt = pendingTransfers[transferId];
+        require(pt.timestamp != 0, TransferDoesNotExist());
+        _doClaim(transferId, pt);
+    }
+
+    function _doClaim(uint256 transferId, PendingTransfer storage pt) internal {
+        unchecked {
+            uint256 id = pt.id;
+            require(block.timestamp >= pt.timestamp + (id >> 160), TimelockNotExpired());
+            address to = pt.to;
+            require(guardians[to] == address(0), ClaimBlockedByGuardian());
+            address from = pt.from;
+            uint256 amount = pt.amount;
+
+            _burn(address(0), to, id, amount);
+            _outboundTransfers[from].remove(transferId);
+            _inboundTransfers[to].remove(transferId);
+            delete pendingTransfers[transferId];
+
+            address token = address(uint160(id));
+            if (token == address(0)) to.safeTransferETH(amount);
+            else token.safeTransfer(to, amount);
+
+            emit TransferClaimed(transferId);
+        }
+    }
+
     // DEPOSIT
 
+    /// @notice Wraps `amount` of `token` (or `msg.value` for ETH) for `to` with `delay`
+    /// timelock. `delay == 0` mints unlocked; otherwise creates a pending transfer.
+    /// @dev Mints the wrapper at face value of the deposited amount. Assumes vanilla
+    /// ERC20 semantics: fee-on-transfer, rebasing, and other nonstandard tokens will
+    /// leave wrapper supply diverged from the contract's underlying reserves and may
+    /// leave late withdrawers unable to exit. For rebasing assets use wstETH-style
+    /// non-rebasing wrappers.
     function depositTo(address token, address to, uint256 amount, uint96 delay, bytes calldata data)
         public
         payable
         nonReentrant
         returns (uint256 transferId)
     {
+        require(to != address(this), InvalidDeposit());
+
         if (msg.value != 0) {
-            require(token == address(0), InvalidDeposit());
+            require(token == address(0) && amount == 0, InvalidDeposit());
             amount = msg.value;
         } else {
+            require(token != address(0) && amount != 0, InvalidDeposit());
             token.safeTransferFrom(msg.sender, address(this), amount);
         }
 
-        // Token in lower 160 bits, delay in upper 96 bits.
-        uint256 id = uint256(uint160(token)) | (uint256(delay) << 160);
+        return _finishDeposit(token, to, amount, delay, 0, data);
+    }
+
+    /// @notice Deposit with a relayer tip. Tip pays whoever lands `gate.claim`;
+    /// otherwise refundable to the depositor via `gate.refundTip`.
+    /// @dev `msg.value == amount + tip` for ETH or `tip` for ERC20. `delay != 0`,
+    /// `tip != 0`, and `tip <= type(uint96).max` (the gate stores tips packed in a uint96).
+    function depositToWithTip(
+        address token,
+        address to,
+        uint256 amount,
+        uint96 delay,
+        uint256 tip,
+        bytes calldata data
+    ) public payable nonReentrant returns (uint256 transferId) {
+        require(to != address(this), InvalidDeposit());
+        require(amount != 0, InvalidAmount());
+        require(delay != 0, InvalidDeposit());
+        require(tip != 0 && tip <= type(uint96).max, InvalidAmount());
+
+        if (token == address(0)) {
+            require(msg.value == amount + tip, InvalidDeposit());
+        } else {
+            require(msg.value == tip, InvalidDeposit());
+            token.safeTransferFrom(msg.sender, address(this), amount);
+        }
+
+        return _finishDeposit(token, to, amount, delay, tip, data);
+    }
+
+    function _finishDeposit(
+        address token,
+        address to,
+        uint256 amount,
+        uint96 delay,
+        uint256 tip,
+        bytes calldata data
+    ) internal returns (uint256 transferId) {
+        uint256 id = encodeId(token, delay);
 
         unchecked {
             _mint(to, id, amount, data);
 
             if (delay != 0) {
                 transferId = uint256(
-                    keccak256(abi.encodePacked(msg.sender, to, id, amount, nonces[msg.sender]++))
+                    keccak256(
+                        abi.encodePacked(
+                            msg.sender,
+                            to,
+                            id,
+                            amount,
+                            nonces[msg.sender]++,
+                            lastGuardianChange[msg.sender],
+                            _OP_TRANSFER
+                        )
+                    )
                 );
 
                 pendingTransfers[transferId] =
@@ -255,6 +526,8 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
                 _inboundTransfers[to].add(transferId);
 
                 emit TransferPending(transferId, delay);
+
+                if (tip != 0) SLOWGate(gate).recordTip{value: tip}(transferId, msg.sender, to);
             } else {
                 unlockedBalances[to][id] += amount;
             }
@@ -267,14 +540,26 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         public
         nonReentrant
     {
+        require(to != address(0), InvalidRecipient());
+        require(amount != 0, InvalidAmount());
         unlockedBalances[from][id] -= amount;
 
         unchecked {
             if (guardians[from] != address(0)) {
                 require(
                     guardianApproved[uint256(
-                        keccak256(abi.encodePacked(from, to, id, amount, nonces[from]++))
-                    )],
+                            keccak256(
+                                abi.encodePacked(
+                                    from,
+                                    to,
+                                    id,
+                                    amount,
+                                    nonces[from]++,
+                                    lastGuardianChange[from],
+                                    _OP_WITHDRAW
+                                )
+                            )
+                        )],
                     GuardianApprovalRequired()
                 );
             }
@@ -300,6 +585,7 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         uint256 amount,
         bytes calldata data
     ) public override(ERC1155) nonReentrant {
+        require(amount != 0, InvalidAmount());
         unlockedBalances[from][id] -= amount;
 
         unchecked {
@@ -308,8 +594,19 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
             bool requiresDelayOrGuardian = guardian != address(0) || delay != 0;
 
             if (requiresDelayOrGuardian) {
-                uint256 transferId =
-                    uint256(keccak256(abi.encodePacked(from, to, id, amount, nonces[from]++)));
+                uint256 transferId = uint256(
+                    keccak256(
+                        abi.encodePacked(
+                            from,
+                            to,
+                            id,
+                            amount,
+                            nonces[from]++,
+                            lastGuardianChange[from],
+                            _OP_TRANSFER
+                        )
+                    )
+                );
 
                 if (guardian != address(0)) {
                     require(guardianApproved[transferId], GuardianApprovalRequired());
@@ -336,151 +633,254 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
     // REVERSE
 
+    /// @notice Cancels a pending transfer before its timelock expires. Returns the wrapper
+    /// to `pt.from` and credits their `unlockedBalances`. Callable by `pt.from` or any
+    /// operator approved via `setApprovalForAll`.
+    /// @dev Move uses `_safeTransfer`, which calls `onERC1155Received` on `pt.from` per
+    /// ERC1155 spec. Contract depositors must implement `IERC1155Receiver` to be
+    /// reverse-eligible — they did not receive the 1155 at deposit (minted to `pt.to`).
+    /// EOAs unaffected.
     function reverse(uint256 transferId) public nonReentrant {
         unchecked {
             PendingTransfer storage pt = pendingTransfers[transferId];
-
             require(pt.timestamp != 0, TransferDoesNotExist());
-            require(block.timestamp <= pt.timestamp + (pt.id >> 160), TimelockExpired());
-
+            uint256 id = pt.id;
+            require(block.timestamp < pt.timestamp + (id >> 160), TimelockExpired());
             if (msg.sender != pt.from) {
                 require(isApprovedForAll(pt.from, msg.sender), Unauthorized());
             }
-
-            (address from, address to, uint256 id, uint256 amount) =
-                (pt.from, pt.to, pt.id, pt.amount);
-
+            (address from, address to, uint256 amount) = (pt.from, pt.to, pt.amount);
             unlockedBalances[from][id] += amount;
-
             _outboundTransfers[from].remove(transferId);
             _inboundTransfers[to].remove(transferId);
-
             delete pendingTransfers[transferId];
+            emit TransferReversed(transferId);
+            _safeTransfer(address(0), to, from, id, amount, "");
+        }
+    }
 
+    // CLAWBACK
+
+    /// @notice Sender recovery for unsettled transfers (e.g. dead/lost recipient). Returns
+    /// the wrapper to `pt.from` and credits their `unlockedBalances`. Callable by `pt.from`
+    /// or any operator approved via `setApprovalForAll`.
+    /// @dev Available 30 days past timelock expiry. Mirrors `reverse` (wrapper-route, not
+    /// raw payout) so any subsequent raw exit goes through `withdrawFrom` and inherits
+    /// guardian gating when `guardians[pt.from]` is set. For one-shot raw recovery, batch
+    /// with `withdrawFrom` via `multicall`. Move uses `_safeTransfer`; contract `pt.from`
+    /// must implement `IERC1155Receiver`. EOAs unaffected. Only catches transfers whose
+    /// pending entry still exists; once `unlock` or `claim` runs, settlement to `pt.to`
+    /// is final.
+    function clawback(uint256 transferId) public nonReentrant {
+        unchecked {
+            PendingTransfer storage pt = pendingTransfers[transferId];
+            require(pt.timestamp != 0, TransferDoesNotExist());
+            uint256 id = pt.id;
+            require(
+                block.timestamp >= pt.timestamp + (id >> 160) + _CLAWBACK_GRACE, ClawbackNotReady()
+            );
+            (address from, address to, uint256 amount) = (pt.from, pt.to, pt.amount);
+            require(msg.sender == from || isApprovedForAll(from, msg.sender), Unauthorized());
+
+            unlockedBalances[from][id] += amount;
+            _outboundTransfers[from].remove(transferId);
+            _inboundTransfers[to].remove(transferId);
+            delete pendingTransfers[transferId];
+            emit TransferClawedBack(transferId);
             _safeTransfer(address(0), to, from, id, amount, "");
         }
     }
 
     // URI HELPERS
 
+    function _formatDelay(uint256 delay) internal pure returns (string memory) {
+        unchecked {
+            if (delay >= 86400) {
+                uint256 d = delay / 86400;
+                return string(abi.encodePacked(d.toString(), d == 1 ? " day" : " days"));
+            }
+            if (delay >= 3600) {
+                uint256 h = delay / 3600;
+                return string(abi.encodePacked(h.toString(), h == 1 ? " hour" : " hours"));
+            }
+            if (delay >= 60) {
+                uint256 m = delay / 60;
+                return string(abi.encodePacked(m.toString(), m == 1 ? " minute" : " minutes"));
+            }
+            return string(abi.encodePacked(delay.toString(), delay == 1 ? " second" : " seconds"));
+        }
+    }
+
     function _createURI(uint256 id) internal view returns (string memory) {
-        (address token, uint256 delay) = (address(uint160(id)), id >> 160);
+        (address token, uint256 delay) = decodeId(id);
 
         string memory tokenName;
         string memory tokenSymbol;
+        string memory escSymbol;
 
         if (token != address(0)) {
-            tokenName = token.readName();
-            tokenSymbol = token.readSymbol();
+            // `readName`/`readSymbol` cap at the byte length we pass and may cut mid-codepoint;
+            // `_utf8Trim` keeps the JSON payload valid UTF-8 for strict marketplace parsers.
+            tokenName = _utf8Trim(token.readName(64));
+            tokenSymbol = _utf8Trim(token.readSymbol(16));
+            escSymbol = LibString.escapeJSON(tokenSymbol);
         } else {
+            // Literal symbol is JSON-safe; tokenName goes through escapeJSON below as a no-op.
             tokenName = "Ether";
             tokenSymbol = "ETH";
+            escSymbol = "ETH";
         }
+
+        string memory delayLabel = _formatDelay(delay);
+
+        bytes memory head = abi.encodePacked(
+            '{"name":"SLOW ',
+            escSymbol,
+            unicode" · ",
+            delayLabel,
+            '",',
+            '"description":"Tokenized representation of a time-locked ',
+            LibString.escapeJSON(tokenName),
+            " (",
+            escSymbol,
+            ') transfer.",'
+        );
+        bytes memory image = abi.encodePacked(
+            '"image":"', _createImage(token, delay, delayLabel, tokenName, tokenSymbol), '",'
+        );
+        bytes memory attrs = abi.encodePacked(
+            '"attributes":[',
+            '{"trait_type":"Asset","value":"',
+            escSymbol,
+            '"},{"trait_type":"Token","value":"',
+            token.toHexStringChecksummed(),
+            '"},{"trait_type":"Delay","value":"',
+            delayLabel,
+            '"},{"trait_type":"Delay (seconds)","value":',
+            delay.toString(),
+            ',"display_type":"number"}]}'
+        );
 
         return string(
             abi.encodePacked(
-                "data:application/json;base64,",
-                Base64.encode(
-                    bytes(
-                        abi.encodePacked(
-                            '{"name":"SLOW",',
-                            '"description":"Tokenized representation of a time-locked ',
-                            tokenName,
-                            " (",
-                            tokenSymbol,
-                            ') transfer.",',
-                            '"image":"',
-                            _createImage(token, delay, tokenName, tokenSymbol),
-                            '"}'
-                        )
-                    )
-                )
+                "data:application/json;base64,", Base64.encode(bytes.concat(head, image, attrs))
             )
         );
+    }
+
+    // Trim a trailing partial UTF-8 sequence so byte-bounded reads (`readName` /
+    // `readSymbol`) and post-clip slices stay well-formed in the JSON / SVG payloads.
+    function _utf8Trim(string memory s) internal pure returns (string memory) {
+        bytes memory b = bytes(s);
+        uint256 n = b.length;
+        // Walk back over continuation bytes (10xxxxxx).
+        while (n != 0 && (uint8(b[n - 1]) & 0xC0) == 0x80) {
+            unchecked {
+                --n;
+            }
+        }
+        if (n != 0) {
+            uint8 lead = uint8(b[n - 1]);
+            if (lead >= 0xC0) {
+                // Multi-byte sequence start; check if enough continuations followed.
+                uint256 expected = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : 2;
+                uint256 actual = b.length - (n - 1);
+                if (actual >= expected) {
+                    // Sequence is complete; restore the bytes we walked back.
+                    n = (n - 1) + expected;
+                } else {
+                    // Incomplete; drop the lead.
+                    unchecked {
+                        --n;
+                    }
+                }
+            }
+        }
+        if (n == b.length) return s;
+        bytes memory out = new bytes(n);
+        for (uint256 i; i != n; ++i) {
+            out[i] = b[i];
+        }
+        return string(out);
+    }
+
+    // Clip to `maxBytes` for SVG display with `...` marker. Routes the slice through
+    // `_utf8Trim` so a mid-codepoint cut doesn't reach the rendered SVG.
+    function _clipForDisplay(string memory s, uint256 maxBytes)
+        internal
+        pure
+        returns (string memory)
+    {
+        bytes memory b = bytes(s);
+        if (b.length <= maxBytes) return s;
+        bytes memory clipped = new bytes(maxBytes);
+        for (uint256 i; i != maxBytes; ++i) {
+            clipped[i] = b[i];
+        }
+        return string(abi.encodePacked(_utf8Trim(string(clipped)), "..."));
     }
 
     function _createImage(
         address token,
         uint256 delay,
+        string memory delayLabel,
         string memory tokenName,
         string memory tokenSymbol
     ) internal pure returns (string memory) {
-        unchecked {
-            return string(
+        string memory escSymbol = LibString.escapeHTML(tokenSymbol);
+        string memory dispName = LibString.escapeHTML(_clipForDisplay(tokenName, 28));
+
+        // Address row is suppressed for ETH (zero address would render as 0x000…000).
+        // Shared font-family / text-anchor / fill come from the <g> wrapper below.
+        string memory addressRow = token == address(0)
+            ? ""
+            : string(
                 abi.encodePacked(
-                    "data:image/svg+xml;base64,",
-                    Base64.encode(
-                        bytes(
-                            abi.encodePacked(
-                                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">',
-                                '<rect width="100%" height="100%" fill="black"/>',
-                                // Header with underline:
-                                '<line x1="20" y1="50" x2="280" y2="50" stroke="white" stroke-width="1"/>',
-                                '<text x="20" y="35" font-family="Helvetica, Arial, sans-serif" font-size="24" fill="white">SLOW</text>',
-                                // Token address:
-                                '<text x="150" y="105" font-family="monospace" font-size="10" text-anchor="middle" fill="white">',
-                                token.toHexStringChecksummed(),
-                                "</text>",
-                                // Token name and symbol:
-                                '<text x="150" y="165" font-family="monospace" font-size="12" text-anchor="middle" fill="white">',
-                                tokenName,
-                                " (",
-                                tokenSymbol,
-                                ")</text>",
-                                // Main human-readable time display (e.g., "2 days" or "3 hours"):
-                                '<text x="150" y="215" font-family="monospace" font-size="12" text-anchor="middle" fill="white">',
-                                delay >= 86400
-                                    ? string(
-                                        abi.encodePacked(
-                                            (delay / 86400).toString(),
-                                            (delay / 86400 == 1) ? " day" : " days"
-                                        )
-                                    )
-                                    : delay >= 3600
-                                        ? string(
-                                            abi.encodePacked(
-                                                (delay / 3600).toString(),
-                                                (delay / 3600 == 1) ? " hour" : " hours"
-                                            )
-                                        )
-                                        : delay >= 60
-                                            ? string(
-                                                abi.encodePacked(
-                                                    (delay / 60).toString(),
-                                                    (delay / 60 == 1) ? " minute" : " minutes"
-                                                )
-                                            )
-                                            : string(
-                                                abi.encodePacked(
-                                                    delay.toString(), (delay == 1) ? " second" : " seconds"
-                                                )
-                                            ),
-                                "</text>",
-                                // Only add the subtitle with exact seconds if the delay isn't already in seconds:
-                                delay > 60
-                                    ? string(
-                                        abi.encodePacked(
-                                            '<text x="150" y="230" font-family="monospace" font-size="8" text-anchor="middle" fill="#888888">',
-                                            delay.toString(),
-                                            " seconds",
-                                            "</text>"
-                                        )
-                                    )
-                                    : "",
-                                // Command symbol in bottom right:
-                                '<text x="270" y="280" font-family="monospace" font-size="16" text-anchor="end" fill="white">',
-                                unicode"⌘",
-                                "</text>",
-                                "</svg>"
-                            )
-                        )
-                    )
+                    '<text x="150" y="105" font-size="10" textLength="260" lengthAdjust="spacingAndGlyphs">',
+                    token.toHexStringChecksummed(),
+                    "</text>"
                 )
             );
-        }
+        // Exact-seconds subtitle, only when the main label is coarser than seconds.
+        string memory secondsRow = delay > 60
+            ? string(
+                abi.encodePacked(
+                    '<text x="150" y="230" font-size="8" fill="#888">',
+                    delay.toString(),
+                    " seconds</text>"
+                )
+            )
+            : "";
+
+        bytes memory svg = abi.encodePacked(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 300">',
+            "<title>SLOW ",
+            escSymbol,
+            unicode" · ",
+            delayLabel,
+            "</title>",
+            '<rect width="300" height="300"/>',
+            '<rect x="1" y="1" width="298" height="298" fill="none" stroke="#fff"/>',
+            '<line x1="20" y1="50" x2="280" y2="50" stroke="#fff"/>',
+            '<text x="20" y="35" font-family="Helvetica,Arial,sans-serif" font-size="24" fill="#fff">SLOW</text>',
+            '<g font-family="monospace" text-anchor="middle" fill="#fff">',
+            addressRow,
+            '<text x="150" y="165" font-size="12" textLength="260" lengthAdjust="spacingAndGlyphs">',
+            dispName,
+            " (",
+            escSymbol,
+            ")</text>"
+        );
+        bytes memory tail = abi.encodePacked(
+            '<text x="150" y="215" font-size="12">', delayLabel, "</text>", secondsRow, "</g></svg>"
+        );
+
+        return string(
+            abi.encodePacked("data:image/svg+xml;base64,", Base64.encode(bytes.concat(svg, tail)))
+        );
     }
 
-    // UNAUTHORIZED
+    // BATCH (DISABLED)
 
     function safeBatchTransferFrom(
         address,
@@ -489,6 +889,87 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         uint256[] calldata,
         bytes calldata
     ) public pure override(ERC1155) {
-        revert Unauthorized();
+        revert BatchTransferDisabled();
+    }
+}
+
+interface IHtmlRegistry {
+    function setHtmlAsTarget(address target, string calldata html) external;
+}
+
+/// @notice `claim`-only operator for keeper-driven settlement. Approve via
+/// `setApprovalForAll(slow.gate(), true)`. Cannot redirect funds: the gate has
+/// no path to `safeTransferFrom` or `withdrawFrom`, and `claim` pins payout to `pt.to`.
+/// Holds optional per-transfer relayer tips posted via `SLOW.depositToWithTip`.
+contract SLOWGate {
+    using SafeTransferLib for address;
+
+    SLOW public immutable slow = SLOW(msg.sender);
+
+    struct Tip {
+        uint96 amount;
+        address sender;
+    }
+
+    mapping(uint256 transferId => Tip) public tips;
+
+    event TipPosted(
+        uint256 indexed transferId, uint96 amount, address indexed sender, address indexed to
+    );
+    event TipRefunded(uint256 indexed transferId, uint96 amount, address indexed to);
+    event TipPaid(uint256 indexed transferId, uint96 amount, address indexed to);
+
+    error TipStillPending();
+    error Unauthorized();
+    error NoTip();
+
+    constructor() payable {}
+
+    function recordTip(uint256 transferId, address sender, address to) public payable {
+        require(msg.sender == address(slow), Unauthorized());
+        tips[transferId] = Tip(uint96(msg.value), sender);
+        emit TipPosted(transferId, uint96(msg.value), sender, to);
+    }
+
+    /// @notice Settle one transfer through the gate. If a tip is attached, pays it
+    /// to `msg.sender` and routes through `slow.claimTipped` (no recipient approval
+    /// required); otherwise routes through `slow.claim`, which requires `pt.to` to
+    /// have approved the gate via `setApprovalForAll`.
+    function claim(uint256 transferId) public {
+        _claimAndPay(transferId);
+    }
+
+    /// @notice Atomic batch settlement; the whole call reverts on the first failure.
+    /// Keepers must filter ids off-chain (timelock-expired, no guardian on `pt.to`).
+    function claimMany(uint256[] calldata transferIds) public {
+        for (uint256 i; i != transferIds.length; ++i) {
+            _claimAndPay(transferIds[i]);
+        }
+    }
+
+    /// @notice Recover an unclaimed tip after the underlying transfer cleared via a
+    /// non-gate path (`unlock`, `reverse`, `clawback`, or recipient-direct `claim`).
+    /// Callable only by the original depositor; reverts while the transfer is still pending.
+    function refundTip(uint256 transferId) public {
+        (uint96 ts,,,,) = slow.pendingTransfers(transferId);
+        require(ts == 0, TipStillPending());
+        Tip memory t = tips[transferId];
+        require(t.amount != 0, NoTip());
+        require(msg.sender == t.sender, Unauthorized());
+        delete tips[transferId];
+        msg.sender.safeTransferETH(t.amount);
+        emit TipRefunded(transferId, t.amount, msg.sender);
+    }
+
+    function _claimAndPay(uint256 transferId) internal {
+        Tip memory t = tips[transferId];
+        if (t.amount != 0) {
+            delete tips[transferId];
+            slow.claimTipped(transferId);
+            msg.sender.safeTransferETH(t.amount);
+            emit TipPaid(transferId, t.amount, msg.sender);
+        } else {
+            slow.claim(transferId);
+        }
     }
 }
