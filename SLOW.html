@@ -45,10 +45,10 @@ body.v-take .take{top:calc(50% + 32px)}
 .opt{font-weight:bold;font-size:18px;color:var(--fg);background:var(--bg2);cursor:pointer;border:1px solid var(--bd);padding:15px 20px;min-width:80px;text-align:center;transition:var(--t);user-select:none}
 .opt:hover{background:var(--bg3)}
 .opt.sel{background:var(--bg3);border:2px solid var(--fg);box-shadow:0 0 10px rgba(128,128,128,.4)}
-.modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);justify-content:center;align-items:center;z-index:25}
+.modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);justify-content:center;z-index:25;overflow-y:auto;padding:16px 0}
 body.light .modal{background:rgba(0,0,0,.5)}
 .modal.on{display:flex}
-.card{background:var(--bg);border:2px solid var(--fg);color:var(--fg);padding:30px;width:min(350px,calc(100vw - 32px));text-align:center;border-radius:6px}
+.card{background:var(--bg);border:2px solid var(--fg);color:var(--fg);padding:30px;width:min(350px,calc(100vw - 32px));text-align:center;border-radius:6px;margin:auto 0;overflow-wrap:break-word}
 .card h3{margin-bottom:15px}
 .summary{font-size:24px;font-weight:bold;margin-bottom:30px}
 .input{width:100%;background:var(--bg2);color:var(--fg);border:1px solid var(--bd);padding:12px;font-size:16px;border-radius:4px;text-align:center;margin-bottom:20px}
@@ -56,7 +56,7 @@ body.light .modal{background:rgba(0,0,0,.5)}
 .btn{background:var(--fg);color:var(--bg);border:none;padding:12px 30px;font-size:18px;font-weight:bold;cursor:pointer;border-radius:4px;transition:var(--t);width:100%}
 .btn:hover{filter:brightness(.9)}
 .btn:disabled{opacity:.5;cursor:not-allowed;filter:none}
-.ens{font-size:14px;text-align:left;height:20px;margin-bottom:10px}
+.ens{font-size:14px;text-align:left;min-height:20px;margin-bottom:10px}
 .ens.ok{color:#4caf50}
 .ens.err{color:#ff6b6b}
 .tgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:0 0 20px}
@@ -177,7 +177,7 @@ body.v-take .take{top:calc(50% + 24px)}
 <div class="take" id="take"></div>
 <div class="modal" id="amountModal"><div class="card">
 <h3>Custom Amount</h3>
-<input type="number" class="input" id="amountInput" min="0" step="any" placeholder="0">
+<input type="number" class="input" id="amountInput" min="0" step="any" inputmode="decimal" placeholder="0">
 <button class="btn" id="amountApply">Apply</button>
 </div></div>
 <div class="modal" id="timeModal"><div class="card">
@@ -192,7 +192,7 @@ body.v-take .take{top:calc(50% + 24px)}
 </div></div>
 <div class="modal" id="confirmModal"><div class="card">
 <div class="summary" id="summary"></div>
-<input type="text" class="input" id="recipientInput" placeholder="Address, .eth, or .wei">
+<input type="text" class="input" id="recipientInput" placeholder="Address, .eth, or .wei" autocomplete="off" spellcheck="false">
 <div class="ens" id="ens"></div>
 <label class="auto-claim"><input type="checkbox" id="autoClaimChk">🤖 Auto-claim for recipient</label>
 <div class="tip-pre" id="tipPre"></div>
@@ -214,7 +214,6 @@ body.v-take .take{top:calc(50% + 24px)}
 <div class="toast" id="toast"></div><script>
 (()=>{
 'use strict';
-const $ = id => document.getElementById(id);
 const SLOW = '0x000000000000888741B254d37e1b27128AfEAaBC';
 const ZERO = '0x0000000000000000000000000000000000000000';
 const MAINNET = '0x1';
@@ -313,7 +312,7 @@ function decode(types,hex){
   return out;
 }
 function parseUnits(amt,dec){
-  const [w='0',f=''] = String(amt).split('.');
+  const [w='0',f=''] = Number(amt).toLocaleString('fullwide',{useGrouping:false,maximumFractionDigits:20}).split('.');
   return BigInt(w||'0')*10n**BigInt(dec)+BigInt((f+'0'.repeat(dec)).slice(0,dec)||'0');
 }
 function formatUnits(v,dec){
@@ -422,7 +421,9 @@ async function wnsReverse(addr){
   const ah=await callOk(WNS, SEL.wnsReverse+word(addr));
   if(!ah) return null;
   const [name]=decode(['string'],ah);
-  return name || null;
+  if(!name) return null;
+  const fwd=await wnsResolve(name);
+  return fwd && fwd.toLowerCase()===addr.toLowerCase() ? name : null;
 }
 const resolveName = name =>
   name.toLowerCase().endsWith('.wei') ? wnsResolve(name) : ensResolve(name);
@@ -580,14 +581,10 @@ function makeArrow(t, sym){
   const clawable = S.tab==='outbound' && now >= t.unlockTime+GRACE;
   const bar=ce('div');
   bar.className='bar';
-  bar.dataset.id=t.id;
   bar.style.width=Math.min(100,progress)+'%';
   const arr=ce('div');
   arr.className = 'arrow' + (inbReady?' ready':clawable?' recover':'') + (t.tipped?' tipped':'');
   arr.textContent = inbReady ? '★' : clawable ? '↩' : !expired ? '➤' : '✓';
-  arr.dataset.id=t.id; arr.dataset.ts=t.timestamp; arr.dataset.delay=t.delay;
-  arr.dataset.expired = expired ? '1' : '';
-  arr.dataset.clawable = clawable ? '1' : '';
   arr.style.left=Math.min(95,progress)+'%';
   const direction = S.tab==='outbound' ? 'To' : 'From';
   const counterparty = S.tab==='outbound' ? t.to : t.from;
@@ -651,19 +648,8 @@ function clearProgressTimer(){
   if(S.progressTimer){ clearInterval(S.progressTimer); S.progressTimer=null; }
 }
 function updateProgress(){
-  if(S.view!=='take'){ clearProgressTimer(); return; }
-  const now=nw();
-  let stale=false;
-  qsa('.arrow').forEach(a=>{
-    const ts=+a.dataset.ts, d=+a.dataset.delay;
-    const p=Math.min(100,((now-ts)/d)*100);
-    a.style.left=Math.min(95,p)+'%';
-    const bar = a.parentElement.querySelector(`.bar[data-id="${a.dataset.id}"]`);
-    if(bar) bar.style.width=Math.min(100,p)+'%';
-    if(!a.dataset.expired && now>=ts+d) stale=true;
-    if(S.tab==='outbound' && !a.dataset.clawable && now>=ts+d+GRACE) stale=true;
-  });
-  if(stale) renderTransfers();
+  if(S.view!=='take') clearProgressTimer();
+  else renderTransfers();
 }
 async function ensureMainnet(){
   const id = await rpc('eth_chainId', []);
@@ -674,7 +660,7 @@ async function ensureMainnet(){
 function setAccount(a){
   S.account=a; S.ensName=null;
   S.out=[]; S.inb=[]; S.hasGuardian=false;
-  reverseAny(a).then(n=>{S.ensName=n; updateWallet();}).catch(()=>{});
+  reverseAny(a).then(n=>{if(S.account===a){S.ensName=n; updateWallet();}}).catch(()=>{});
   updateWallet();
   if(S.view==='take') loadTransfers();
 }
@@ -907,18 +893,17 @@ async function claim(t){
   finally { hideLoad(); }
 }
 async function refundTipIfAny(t){
-  if(!t.tipped) return;
+  if(!t.tipped) return '';
   const gate = await getGate();
-  if(!gate || gate === ZERO) return;
+  if(!gate || gate === ZERO) return '';
   try {
     showLoad('Refunding tip...');
-    const data = c1(SEL.refundTip, t.id);
-    const hash = await sendTx({from:S.account, to:gate, data});
+    const hash = await sendTx({from:S.account, to:gate, data:c1(SEL.refundTip,t.id)});
     showLoad('Confirming refund...');
     await waitTx(hash);
-    toast('Tip refunded!', 4000);
+    return ' Tip refunded.';
   } catch(e){
-    toast('Tip is still on the gate — call gate.refundTip later to recover', 6000);
+    return ' Tip stuck on gate; refund later via gate.refundTip.';
   }
 }
 async function clawback(t){
@@ -931,10 +916,10 @@ async function clawback(t){
       ? c1(SEL.clawback,t.id)
       : cd(SEL.multicall,['bytes[]'],[[c1(SEL.clawback,t.id),wf(t)]]);
     await ss(data);
-    toast(S.hasGuardian
+    const tip = await refundTipIfAny(t);
+    toast((S.hasGuardian
       ? 'Recovered. Coordinate with guardian to withdraw underlying.'
-      : 'Recovered!', 6000);
-    await refundTipIfAny(t);
+      : 'Recovered!') + tip, 6000);
     loadTransfers();
   } catch(e){ toast(e.message || 'Failed'); }
   finally { hideLoad(); }
@@ -948,10 +933,10 @@ async function reverseAndWithdraw(t){
       ? c1(SEL.reverse,t.id)
       : cd(SEL.multicall,['bytes[]'],[[c1(SEL.reverse,t.id),wf(t)]]);
     await ss(data);
-    toast(S.hasGuardian
+    const tip = await refundTipIfAny(t);
+    toast((S.hasGuardian
       ? 'Reversed. Coordinate with guardian to withdraw underlying.'
-      : 'Reversed and returned!', 6000);
-    await refundTipIfAny(t);
+      : 'Reversed and returned!') + tip, 6000);
     loadTransfers();
   } catch(e){ toast(e.message || 'Failed'); }
   finally { hideLoad(); }
@@ -1061,6 +1046,8 @@ el.tokenApply.onclick = async () => {
   render();
 };
 el.tokenInput.addEventListener('keydown', e => { if(e.key==='Enter') el.tokenApply.click(); });
+el.amountInput.addEventListener('keydown', e => { if(e.key==='Enter') el.amountApply.click(); });
+[el.dInput,el.hInput,el.mInput,el.sInput].forEach(i => i.addEventListener('keydown', e => { if(e.key==='Enter') el.timeApply.click(); }));
 el.timeApply.onclick = () => {
   const r = fmtCustomTime({d:el.dInput.value,h:el.hInput.value,m:el.mInput.value,s:el.sInput.value});
   if(!r.seconds){ toast('Enter delay > 0s'); return; }

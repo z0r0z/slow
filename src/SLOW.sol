@@ -46,11 +46,11 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     event GuardianChangeCanceled(address indexed user);
     event TransferClaimed(uint256 indexed transferId);
 
+    error GuardianChangeAlreadyCommittable();
     error GuardianApprovalRequired();
     error NoGuardianChangePending();
     error ClaimBlockedByGuardian();
     error GuardianChangeNotReady();
-    error GuardianChangeAlreadyCommittable();
     error BatchTransferDisabled();
     error TransferDoesNotExist();
     error TimelockNotExpired();
@@ -99,7 +99,7 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
     mapping(address user => PendingGuardian) public pendingGuardian;
 
-    mapping(uint256 transferId => bool) public guardianApproved;
+    mapping(address user => mapping(uint256 transferId => bool)) public guardianApproved;
 
     mapping(address user => address) public guardians;
 
@@ -211,6 +211,8 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         return guardians[user] == address(0)
             ? false
             : !guardianApproved[
+                user
+            ][
                 uint256(
                     keccak256(
                         abi.encodePacked(
@@ -237,6 +239,8 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         return guardians[user] == address(0)
             ? false
             : !guardianApproved[
+                user
+            ][
                 uint256(
                     keccak256(
                         abi.encodePacked(
@@ -257,6 +261,10 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     // EnumerableSetLib swaps with the last element on remove, so positional reads
     // (`outboundTransferAt` / `inboundTransferAt`) are not stable across settlement.
     // Indexers should snapshot via `getOutboundTransfers` / `getInboundTransfers`.
+    // Both array getters are unbounded and grow with set size — `_inboundTransfers`
+    // can be expanded by anyone via dust deposits. On-chain consumers that iterate
+    // these getters can OOG; use `inboundTransferCount` + `inboundTransferAt(i)`
+    // (or the outbound equivalents) to paginate and bound gas.
 
     function getOutboundTransfers(address user) public view returns (uint256[] memory) {
         return _outboundTransfers[user].values();
@@ -291,7 +299,15 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     /// current guardian can `cancelGuardianChange` before `effectiveAt`, anyone can
     /// `commitGuardian` after. This protects already-wrapped balances against key
     /// compromise: a stolen key cannot remove a live guardian without the veto window.
-    function setGuardian(address newGuardian) public {
+    ///
+    /// Post-window abort: once `block.timestamp >= effectiveAt`, the rotation is
+    /// considered decided and `commitGuardian` becomes permissionless — neither
+    /// `cancelGuardianChange` nor `setGuardian(currentGuardian)` can clear the
+    /// pending entry. To abort late, propose a different guardian (this overwrites
+    /// the pending entry and restarts the window), then `cancelGuardianChange`
+    /// during the new window. This is intentional: the 1-day delay is the decision
+    /// window, not an indefinite veto.
+    function setGuardian(address newGuardian) public nonReentrant {
         // Self-guardian provides no protection: a stolen key can also `approveTransfer`.
         require(newGuardian != msg.sender, InvalidGuardian());
         if (newGuardian == guardians[msg.sender]) {
@@ -354,7 +370,7 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     /// approval of the wrong op — guardians must still verify intent off-chain.
     function approveTransfer(address from, uint256 transferId) public {
         require(msg.sender == guardians[from], Unauthorized());
-        guardianApproved[transferId] = true;
+        guardianApproved[from][transferId] = true;
         emit TransferApproved(msg.sender, from, transferId);
     }
 
@@ -363,8 +379,8 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     /// invalidate ALL approvals). Idempotent — revoking a clear slot is a no-op.
     function revokeApproval(address from, uint256 transferId) public {
         require(msg.sender == guardians[from], Unauthorized());
-        if (!guardianApproved[transferId]) return;
-        delete guardianApproved[transferId];
+        if (!guardianApproved[from][transferId]) return;
+        delete guardianApproved[from][transferId];
         emit TransferApprovalRevoked(msg.sender, from, transferId);
     }
 
@@ -413,6 +429,11 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         _doClaim(transferId, pt);
     }
 
+    /// @dev Settles `pt` and pays `pt.to`. Auth is upstream-gated by every caller
+    /// (`claim` checks `msg.sender == pt.to || isApprovedForAll`; `claimTipped`
+    /// checks `msg.sender == gate`). The internal `_burn(address(0), ...)` here
+    /// passes the zero-address sentinel and skips Solady's `NotOwnerNorApproved`
+    /// check — any future caller of this function MUST enforce its own auth.
     function _doClaim(uint256 transferId, PendingTransfer memory pt) internal {
         unchecked {
             require(block.timestamp >= pt.timestamp + (pt.id >> 160), TimelockNotExpired());
@@ -563,8 +584,8 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
                         )
                     )
                 );
-                require(guardianApproved[transferId], GuardianApprovalRequired());
-                delete guardianApproved[transferId];
+                require(guardianApproved[from][transferId], GuardianApprovalRequired());
+                delete guardianApproved[from][transferId];
             }
 
             _burn(msg.sender, from, id, amount);
@@ -591,7 +612,7 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         uint256 amount,
         bytes calldata data
     ) public override(ERC1155) nonReentrant {
-        require(to != address(0) && to != address(this), InvalidRecipient());
+        require(to != address(0) && to != address(this) && to != gate, InvalidRecipient());
         require(amount != 0, InvalidAmount());
         unlockedBalances[from][id] -= amount;
 
@@ -616,8 +637,8 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
                 );
 
                 if (guardian != address(0)) {
-                    require(guardianApproved[transferId], GuardianApprovalRequired());
-                    delete guardianApproved[transferId];
+                    require(guardianApproved[from][transferId], GuardianApprovalRequired());
+                    delete guardianApproved[from][transferId];
                 }
 
                 if (delay != 0) {
@@ -926,6 +947,7 @@ contract SLOWGate {
     event TipPaid(uint256 indexed transferId, uint96 amount, address indexed to);
 
     error TipStillPending();
+    error InvalidAmount();
     error Unauthorized();
     error NoTip();
 
@@ -933,6 +955,9 @@ contract SLOWGate {
 
     function recordTip(uint256 transferId, address sender, address to) public payable {
         require(msg.sender == address(slow), Unauthorized());
+        // Defense-in-depth: SLOW.depositToWithTip already enforces `tip <= type(uint96).max`,
+        // but the truncating cast below would silently lose value if a future caller skipped that.
+        require(msg.value <= type(uint96).max, InvalidAmount());
         tips[transferId] = Tip(uint96(msg.value), sender);
         emit TipPosted(transferId, uint96(msg.value), sender, to);
     }

@@ -566,7 +566,7 @@ contract SLOWTest is Test {
         slow.commitGuardian(user1);
 
         // The stale approval no longer matches the now-current preimage.
-        assertTrue(slow.guardianApproved(staleTransferId));
+        assertTrue(slow.guardianApproved(user1, staleTransferId));
         uint256 freshTransferId = slow.predictTransferId(user1, user2, id, AMOUNT);
         assertTrue(freshTransferId != staleTransferId);
 
@@ -1148,6 +1148,7 @@ contract SLOWTest is Test {
         uint256 nonceBefore = slow.nonces(user1);
 
         RevertingReceiver bad = new RevertingReceiver(slow);
+        uint256 predictedTid = slow.predictTransferId(user1, address(bad), id, AMOUNT);
 
         vm.prank(user1);
         vm.expectRevert();
@@ -1159,6 +1160,16 @@ contract SLOWTest is Test {
         assertEq(slow.nonces(user1), nonceBefore, "nonce not bumped");
         assertEq(slow.outboundTransferCount(user1), 0);
         assertEq(slow.inboundTransferCount(address(bad)), 0);
+
+        // Pending entry under the would-be transferId never landed in storage.
+        (uint96 ts,,,,) = slow.pendingTransfers(predictedTid);
+        assertEq(uint256(ts), 0, "no pending entry recorded");
+        // Nonce stability also means predictTransferId still resolves to the same id.
+        assertEq(
+            slow.predictTransferId(user1, address(bad), id, AMOUNT),
+            predictedTid,
+            "predicted id stable"
+        );
     }
 
     // A contract sender whose onERC1155Received reverts cannot complete clawback —
@@ -2673,6 +2684,46 @@ contract SLOWTest is Test {
         assertEq(uint256(storedTip), 0, "tip entry cleared on refund");
     }
 
+    // ─── hostile recipient cannot strand a tip via setGuardian during _mint hook ─
+    // A contract recipient that calls `slow.setGuardian(...)` from its
+    // `onERC1155Received` hook must be rejected by the `nonReentrant` modifier on
+    // `setGuardian`. Otherwise a hostile recipient could retroactively block tipped
+    // settlement (`_doClaim` reverts `ClaimBlockedByGuardian` when `guardians[to]
+    // != 0`) and lock the depositor's tip until clawback grace.
+    function testGuardianHookCannotLockTippedDeposit() public {
+        SLOWGate gate = SLOWGate(slow.gate());
+        GuardianHookAttacker attacker = new GuardianHookAttacker(slow);
+        address keeper = address(0xCAFE);
+        uint256 tip = 0.01 ether;
+
+        vm.prank(user1);
+        uint256 transferId = slow.depositToWithTip{value: AMOUNT + tip}(
+            address(0), address(attacker), AMOUNT, DELAY, tip, ""
+        );
+
+        // The hook ran but the inner setGuardian was rejected by nonReentrant.
+        assertTrue(attacker.hookRan(), "receiver hook executed");
+        assertTrue(attacker.setGuardianRejected(), "setGuardian re-entry rejected");
+        assertEq(slow.guardians(address(attacker)), address(0), "no guardian set");
+
+        // Tip recorded on the gate, ready for keeper.
+        (uint96 storedTip, address tipSender) = gate.tips(transferId);
+        assertEq(uint256(storedTip), tip, "tip recorded");
+        assertEq(tipSender, user1, "tip sender preserved");
+
+        // After expiry, the keeper can settle. Without the fix, this would revert
+        // ClaimBlockedByGuardian because the attacker's hook would have set one.
+        vm.warp(block.timestamp + DELAY + 1);
+        uint256 attackerBefore = address(attacker).balance;
+        uint256 keeperBefore = keeper.balance;
+        vm.prank(keeper);
+        gate.claim(transferId);
+        assertEq(address(attacker).balance, attackerBefore + AMOUNT, "underlying paid to recipient");
+        assertEq(keeper.balance, keeperBefore + tip, "keeper earned the tip");
+        (storedTip,) = gate.tips(transferId);
+        assertEq(uint256(storedTip), 0, "tip cleared after settlement");
+    }
+
     // ─── tip + sponsored flow: refund paths ──────────────────────────────────
 
     // Recipient self-claims via slow.claim (bypassing the gate). The pending entry
@@ -3108,6 +3159,177 @@ contract SLOWTest is Test {
         slow.safeTransferFrom(user1, user2, id, AMOUNT, "");
     }
 
+    // ─── guardian approvals are scoped per-user ─────────────────────────────────
+    // A guardian for one user must not be able to satisfy the approval check for
+    // another user's transferId. Storage is keyed `guardianApproved[user][tid]`.
+
+    function testGuardianApprovalScopedPerUserBlocksWithdraw() public {
+        // Victim setup: real guardian, unlocked balance.
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+        vm.prank(user1);
+        slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, "");
+
+        // Attacker controls both halves of an unrelated guardian relationship.
+        address attackerUser = address(0xCAFE);
+        address attackerGuardian = address(0xD00D);
+        address thief = address(0xBAD);
+        vm.deal(attackerUser, 1 ether);
+        vm.prank(attackerUser);
+        slow.setGuardian(attackerGuardian);
+
+        uint256 id = calculateId(address(0), 0);
+        uint256 victimWithdrawId = slow.predictWithdrawalId(user1, thief, id, AMOUNT);
+
+        // Attacker's guardian flips the victim's transferId in storage. With the
+        // fix, this writes only to `guardianApproved[attackerUser][...]`, leaving
+        // `guardianApproved[user1][...]` untouched.
+        vm.prank(attackerGuardian);
+        slow.approveTransfer(attackerUser, victimWithdrawId);
+
+        assertTrue(slow.guardianApproved(attackerUser, victimWithdrawId));
+        assertFalse(slow.guardianApproved(user1, victimWithdrawId));
+
+        // Even with the victim's authorization (stolen-key threat model), the
+        // unrelated guardian's approval cannot satisfy victim's withdraw.
+        vm.prank(user1);
+        vm.expectRevert(SLOW.GuardianApprovalRequired.selector);
+        slow.withdrawFrom(user1, thief, id, AMOUNT);
+    }
+
+    function testGuardianApprovalScopedPerUserBlocksTransfer() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+        vm.prank(user1);
+        slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, "");
+
+        address attackerUser = address(0xCAFE);
+        address attackerGuardian = address(0xD00D);
+        address thief = address(0xBAD);
+        vm.deal(attackerUser, 1 ether);
+        vm.prank(attackerUser);
+        slow.setGuardian(attackerGuardian);
+
+        uint256 id = calculateId(address(0), 0);
+        uint256 victimTransferId = slow.predictTransferId(user1, thief, id, AMOUNT);
+
+        vm.prank(attackerGuardian);
+        slow.approveTransfer(attackerUser, victimTransferId);
+
+        // The cross-user approval must not satisfy safeTransferFrom either.
+        vm.prank(user1);
+        vm.expectRevert(SLOW.GuardianApprovalRequired.selector);
+        slow.safeTransferFrom(user1, thief, id, AMOUNT, "");
+    }
+
+    function testGuardianRevokeIsScopedPerUser() public {
+        // Two unrelated user/guardian pairs approve the same transferId hash.
+        // Revoking on one user must not clear the other user's approval slot.
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+
+        address otherUser = address(0xCAFE);
+        address otherGuardian = address(0xD00D);
+        vm.prank(otherUser);
+        slow.setGuardian(otherGuardian);
+
+        uint256 sharedId = uint256(keccak256("shared-tid"));
+
+        vm.prank(guardian);
+        slow.approveTransfer(user1, sharedId);
+        vm.prank(otherGuardian);
+        slow.approveTransfer(otherUser, sharedId);
+
+        assertTrue(slow.guardianApproved(user1, sharedId));
+        assertTrue(slow.guardianApproved(otherUser, sharedId));
+
+        // user1's guardian revokes on user1; otherUser's slot must remain set.
+        vm.prank(guardian);
+        slow.revokeApproval(user1, sharedId);
+
+        assertFalse(slow.guardianApproved(user1, sharedId));
+        assertTrue(slow.guardianApproved(otherUser, sharedId));
+    }
+
+    // ─── failed authorization must not consume a guardian approval ──────────────
+    // The approval check + delete happen *before* the ERC1155 `_burn` / transfer
+    // auth check, so an unauthorized caller's revert must roll back the delete
+    // (and the nonce bump) atomically. A legitimate caller can then still spend
+    // the same approval at the same nonce.
+
+    function testUnauthWithdrawDoesNotConsumeApproval() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+        vm.prank(user1);
+        slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, "");
+
+        uint256 id = calculateId(address(0), 0);
+        uint256 wid = slow.predictWithdrawalId(user1, user2, id, AMOUNT);
+        uint256 nonceBefore = slow.nonces(user1);
+
+        vm.prank(guardian);
+        slow.approveTransfer(user1, wid);
+        assertTrue(slow.guardianApproved(user1, wid));
+
+        // Unauthorized third party (not user1, not an operator) tries to spend.
+        // ERC1155 `_burn(msg.sender, from, ...)` reverts `NotOwnerNorApproved`
+        // (selector 0x4b6e7f18), unwinding all prior state changes in the call.
+        address rando = address(0xBEEF);
+        vm.prank(rando);
+        vm.expectRevert(bytes4(0x4b6e7f18));
+        slow.withdrawFrom(user1, user2, id, AMOUNT);
+
+        // Approval and nonce are unchanged after the failed call.
+        assertTrue(slow.guardianApproved(user1, wid));
+        assertEq(slow.nonces(user1), nonceBefore);
+        assertEq(slow.predictWithdrawalId(user1, user2, id, AMOUNT), wid);
+
+        // Legitimate caller still settles using the surviving approval.
+        uint256 user2Before = user2.balance;
+        vm.prank(user1);
+        slow.withdrawFrom(user1, user2, id, AMOUNT);
+        assertEq(user2.balance - user2Before, AMOUNT);
+
+        // Now the approval has been consumed and the nonce moved forward.
+        assertFalse(slow.guardianApproved(user1, wid));
+        assertEq(slow.nonces(user1), nonceBefore + 1);
+    }
+
+    function testUnauthTransferDoesNotConsumeApproval() public {
+        vm.prank(user1);
+        slow.setGuardian(guardian);
+        vm.prank(user1);
+        slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, "");
+
+        uint256 id = calculateId(address(0), 0);
+        uint256 tid = slow.predictTransferId(user1, user2, id, AMOUNT);
+        uint256 nonceBefore = slow.nonces(user1);
+
+        vm.prank(guardian);
+        slow.approveTransfer(user1, tid);
+        assertTrue(slow.guardianApproved(user1, tid));
+
+        // Unauthorized third party tries to spend via safeTransferFrom.
+        // Solady ERC1155 reverts NotOwnerNorApproved (0x4b6e7f18) inside
+        // `super.safeTransferFrom`, after our state changes — atomic rollback.
+        address rando = address(0xBEEF);
+        vm.prank(rando);
+        vm.expectRevert(bytes4(0x4b6e7f18));
+        slow.safeTransferFrom(user1, user2, id, AMOUNT, "");
+
+        assertTrue(slow.guardianApproved(user1, tid));
+        assertEq(slow.nonces(user1), nonceBefore);
+        assertEq(slow.predictTransferId(user1, user2, id, AMOUNT), tid);
+
+        // Legitimate caller succeeds with the surviving approval.
+        vm.prank(user1);
+        slow.safeTransferFrom(user1, user2, id, AMOUNT, "");
+        assertEq(slow.balanceOf(user2, id), AMOUNT);
+
+        assertFalse(slow.guardianApproved(user1, tid));
+        assertEq(slow.nonces(user1), nonceBefore + 1);
+    }
+
     function testIsWithdrawalApprovalNeededFlipsIndependently() public {
         vm.prank(user1);
         slow.setGuardian(guardian);
@@ -3140,12 +3362,12 @@ contract SLOWTest is Test {
 
         vm.prank(guardian);
         slow.approveTransfer(user1, transferId);
-        assertTrue(slow.guardianApproved(transferId));
+        assertTrue(slow.guardianApproved(user1, transferId));
 
         // Guardian retracts.
         vm.prank(guardian);
         slow.revokeApproval(user1, transferId);
-        assertFalse(slow.guardianApproved(transferId));
+        assertFalse(slow.guardianApproved(user1, transferId));
 
         // Transfer using the now-revoked approval is blocked.
         vm.prank(user1);
@@ -3178,7 +3400,7 @@ contract SLOWTest is Test {
         // Revoking a non-existent approval is a no-op (no revert).
         vm.prank(guardian);
         slow.revokeApproval(user1, fakeId);
-        assertFalse(slow.guardianApproved(fakeId));
+        assertFalse(slow.guardianApproved(user1, fakeId));
     }
 
     // ─── withdrawFrom rejects zero amount ───────────────────────────────────────
@@ -3340,6 +3562,50 @@ contract ReentrantReceiver {
             // bytes4(keccak256("Reentrancy()")) == 0xab143c06
             if (err.length == 4 && bytes4(err) == 0xab143c06) {
                 reentryRejected = true;
+            }
+        }
+        return this.onERC1155Received.selector;
+    }
+
+    function onERC1155BatchReceived(
+        address,
+        address,
+        uint256[] calldata,
+        uint256[] calldata,
+        bytes calldata
+    ) external pure returns (bytes4) {
+        return this.onERC1155BatchReceived.selector;
+    }
+}
+
+// Recipient that tries to set a guardian on itself from `onERC1155Received` during
+// a tipped deposit. With `nonReentrant` on `setGuardian`, the inner call must revert
+// `Reentrancy()`; the attacker swallows it so the deposit still completes — but with
+// no guardian on the recipient, leaving the keeper-tipped settlement path intact.
+contract GuardianHookAttacker {
+    SLOW slow;
+    bool public hookRan;
+    bool public setGuardianRejected;
+
+    constructor(SLOW _slow) payable {
+        slow = _slow;
+    }
+
+    receive() external payable {}
+
+    function onERC1155Received(address, address, uint256, uint256, bytes calldata)
+        external
+        returns (bytes4)
+    {
+        hookRan = true;
+        // Try to set a guardian during the deposit's nonReentrant window.
+        // bytes4(keccak256("Reentrancy()")) == 0xab143c06
+        try slow.setGuardian(address(0xDEAD)) {
+        // unreachable when fix is applied
+        }
+        catch (bytes memory err) {
+            if (err.length == 4 && bytes4(err) == 0xab143c06) {
+                setGuardianRejected = true;
             }
         }
         return this.onERC1155Received.selector;
