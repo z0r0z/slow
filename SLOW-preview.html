@@ -3,12 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>send slow ᯓ➤</title>
+<title>send slow ᯓ➤ — preview</title>
 <style>
-:root{--bg:#000;--fg:#fff;--bg2:#1a1a1a;--bg3:#333;--bd:#333;--eth:#ff69b4;--usdc:#2775ca;--usdt:#26a17b;--bold:#745DDF;--t:.3s ease}
-body.light{--bg:#fff;--fg:#000;--bg2:#e6e6e6;--bg3:#ccc;--bd:#ccc}
+:root {
+  --bg:#000; --fg:#fff; --bg2:#1a1a1a; --bg3:#333; --bd:#333;
+  --eth:#ff69b4; --usdc:#2775ca; --usdt:#26a17b; --bold:#745DDF;
+  --t:.3s ease;
+}
+body.light {
+  --bg:#fff; --fg:#000; --bg2:#e6e6e6; --bg3:#ccc; --bd:#ccc;
+}
 *{box-sizing:border-box;margin:0;padding:0}
-body{height:100vh;display:flex;justify-content:center;align-items:center;background:var(--bg);color:var(--fg);font-family:Arial,sans-serif;transition:var(--t);position:relative;overflow:hidden}
+body{height:100vh;display:flex;justify-content:center;align-items:center;background:var(--bg);color:var(--fg);font-family:Arial,sans-serif;transition:background var(--t),color var(--t);position:relative;overflow:hidden}
 .theme,.wallet{position:absolute;top:20px;background:var(--bg2);color:var(--fg);border:1px solid var(--bd);padding:10px 15px;border-radius:4px;font-size:14px;cursor:pointer;z-index:50;transition:var(--t)}
 .theme{left:20px;width:42px;text-align:center;padding:10px 0}
 .wallet{right:20px}
@@ -17,18 +23,19 @@ body{height:100vh;display:flex;justify-content:center;align-items:center;backgro
 body.v-take .frame{z-index:6;border-color:transparent}
 body.v-take .divider{visibility:hidden}
 body.v-take #takeBox{display:none}
-.box{height:100px;display:flex;justify-content:center;align-items:center;font-weight:bold;font-size:24px;cursor:pointer;transition:var(--t)}
+.box{height:100px;display:flex;justify-content:center;align-items:center;font-weight:bold;font-size:24px;cursor:pointer;transition:transform var(--t),background var(--t),color var(--t)}
 .box.peek{box-shadow:0 4px 12px rgba(0,0,0,.25)}
 body.light .box.peek{box-shadow:0 4px 12px rgba(0,0,0,.15)}
 #takeBox.peek,#sendBox.peek{background:var(--bg2);color:var(--fg)}
 #takeBox.peek:hover,#sendBox.peek:hover{background:var(--bg3)}
 #takeBox.peek{transform:translateY(105px);align-items:flex-end;padding-bottom:15px}
 #sendBox.peek{transform:translateY(-105px)}
-body.v-take #sendBox.peek{position:fixed;top:16px;left:50%;transform:translateX(-50%);width:auto;height:auto;padding:8px 22px;font-size:14px;border:1px solid var(--bd);border-radius:4px;z-index:8;align-items:center}
-body.v-take .tabs{top:60px}
-body.v-take .take{top:calc(50% + 32px)}
-#sendBox,#takeBox.on{background:var(--fg);color:var(--bg)}
-#takeBox,#sendBox.on{background:var(--bg);color:var(--fg)}
+body.v-take #sendBox.peek{position:fixed;top:50px;left:50%;transform:translateX(-50%);width:auto;height:auto;padding:8px 22px;font-size:14px;border:1px solid var(--bd);border-radius:4px;z-index:8;align-items:center}
+body.v-take .take{top:calc(50% + 50px)}
+#sendBox{background:var(--fg);color:var(--bg)}
+#takeBox{background:var(--bg);color:var(--fg)}
+#sendBox.on{background:var(--bg);color:var(--fg)}
+#takeBox.on{background:var(--fg);color:var(--bg)}
 .divider{height:2px;background:var(--fg)}
 .crypto-grid{display:none;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:10px;width:300px;height:300px;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:5}
 .crypto-grid.on{display:grid}
@@ -120,98 +127,125 @@ body.light .loading{background:rgba(255,255,255,.7)}
 body.light .loading p{color:#000}
 .toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--bg2);color:var(--fg);border:1px solid var(--bd);padding:12px 20px;border-radius:4px;font-size:14px;z-index:40;opacity:0;transition:opacity .3s;max-width:80%;text-align:center;pointer-events:none}
 .toast.on{opacity:1}
+.persona-switch{position:fixed;top:0;left:50%;transform:translateX(-50%);background:var(--bg2);color:var(--fg);border:1px solid var(--bd);border-top:none;border-radius:0 0 6px 6px;padding:8px 16px;font-size:12px;z-index:60;display:flex;align-items:center;gap:10px;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+.persona-switch select{background:transparent;color:var(--fg);border:none;outline:none;font-size:12px;cursor:pointer;font-weight:bold}
+.persona-switch label{opacity:.6;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.persona-switch .desc{opacity:.5;font-size:11px;font-style:italic;border-left:1px solid var(--bd);padding-left:10px;max-width:280px}
+body.v-take .tabs{top:96px}
 @media (max-width:480px){
-.frame{width:180px}
-.box{height:90px;font-size:22px}
-.crypto-grid{width:280px;height:280px}
-.crypto{font-size:20px;padding:12px}
-.opt{min-width:60px;padding:12px 14px;font-size:16px}
-#amountRow{top:60px}
-#timeRow{bottom:24px}
-.theme,.wallet{top:12px;padding:8px 12px;font-size:13px}
-.theme{left:12px}
-.wallet{right:12px}
-.card{padding:24px 20px}
-.summary{font-size:20px;margin-bottom:20px}
-.take{width:calc(100vw - 24px);gap:18px}
-.opt-link{top:calc(50% - 180px)}
-#takeBox.peek{transform:translateY(95px);padding-bottom:13px}
-#sendBox.peek{transform:translateY(-95px)}
-body.v-take #sendBox.peek{top:10px;font-size:12px;padding:6px 16px}
-body.v-take .tabs{top:46px}
-body.v-take .take{top:calc(50% + 24px)}
+  .persona-switch{padding:6px 12px;font-size:11px;gap:8px}
+  .persona-switch .desc{display:none}
+  body.v-take .tabs{top:80px}
+}
+@media (max-width:480px){
+  .frame{width:180px}
+  .box{height:90px;font-size:22px}
+  .crypto-grid{width:280px;height:280px}
+  .crypto{font-size:20px;padding:12px}
+  .opt{min-width:60px;padding:12px 14px;font-size:16px}
+  #amountRow{top:60px}
+  #timeRow{bottom:24px}
+  .theme,.wallet{top:12px;padding:8px 12px;font-size:13px}
+  .theme{left:12px}
+  .wallet{right:12px}
+  .card{padding:24px 20px}
+  .summary{font-size:20px;margin-bottom:20px}
+  .take{width:calc(100vw - 24px);gap:18px}
+  .opt-link{top:calc(50% - 180px)}
+  #takeBox.peek{transform:translateY(95px);padding-bottom:13px}
+  #sendBox.peek{transform:translateY(-95px)}
+  body.v-take #sendBox.peek{top:42px;font-size:12px;padding:6px 16px}
+  body.v-take .take{top:calc(50% + 40px)}
 }
 </style>
 </head>
 <body>
+<div class="persona-switch">
+  <label>Preview as</label>
+  <select id="personaSelect">
+    <option value="alice">Alice — Sender</option>
+    <option value="bob">Bob — Recipient</option>
+    <option value="carol">Carol — Active user</option>
+    <option value="dana">Dana — New user</option>
+    <option value="whale">Whale — High volume</option>
+    <option value="grace">Grace — Guardian-protected</option>
+  </select>
+  <span class="desc" id="personaDesc"></span>
+</div>
 <button class="theme" id="themeBtn">☾</button>
 <button class="wallet" id="walletBtn">Connect</button>
+
 <div class="crypto-grid" id="cryptoGrid">
-<div class="crypto" data-symbol="ETH" data-token="0x0000000000000000000000000000000000000000">ETH</div>
-<div class="crypto" data-symbol="USDC" data-token="0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48">USDC</div>
-<div class="crypto" data-symbol="BOLD" data-token="0x6440f144b7e50d6a8439336510312d2f54beb01d">BOLD</div>
-<div class="crypto" data-symbol="USDT" data-token="0xdac17f958d2ee523a2206206994597c13d831ec7">USDT</div>
+  <div class="crypto" data-symbol="ETH" data-token="0x0000000000000000000000000000000000000000">ETH</div>
+  <div class="crypto" data-symbol="USDC" data-token="0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48">USDC</div>
+  <div class="crypto" data-symbol="BOLD" data-token="0x6440f144b7e50d6a8439336510312d2f54beb01d">BOLD</div>
+  <div class="crypto" data-symbol="USDT" data-token="0xdac17f958d2ee523a2206206994597c13d831ec7">USDT</div>
 </div>
+
 <div class="frame">
-<div class="box" id="sendBox">SEND</div>
-<div class="divider"></div>
-<div class="box" id="takeBox">TAKE</div>
+  <div class="box" id="sendBox">SEND</div>
+  <div class="divider"></div>
+  <div class="box" id="takeBox">TAKE</div>
 </div>
+
 <div class="row" id="amountRow">
-<div class="opt" data-amount="1">1</div>
-<div class="opt" data-amount="10">10</div>
-<div class="opt" data-amount="100">100</div>
-<div class="opt" id="customAmountOpt">???</div>
+  <div class="opt" data-amount="1">1</div>
+  <div class="opt" data-amount="10">10</div>
+  <div class="opt" data-amount="100">100</div>
+  <div class="opt" id="customAmountOpt">???</div>
 </div>
 <div class="row" id="timeRow">
-<div class="opt" data-time="600">10 MIN</div>
-<div class="opt" data-time="3600">1 HOUR</div>
-<div class="opt" data-time="86400">1 DAY</div>
-<div class="opt" id="customTimeOpt">???</div>
+  <div class="opt" data-time="600">10 MIN</div>
+  <div class="opt" data-time="3600">1 HOUR</div>
+  <div class="opt" data-time="86400">1 DAY</div>
+  <div class="opt" id="customTimeOpt">???</div>
 </div>
 <div class="opt-link" id="customTokenOpt">+ CUSTOM TOKEN</div>
+
 <div class="tabs" id="tabs">
-<div class="tab on" data-tab="outbound">Outbound</div>
-<div class="tab" data-tab="inbound">Inbound</div>
+  <div class="tab on" data-tab="outbound">Outbound</div>
+  <div class="tab" data-tab="inbound">Inbound</div>
 </div>
 <div class="take" id="take"></div>
+
 <div class="modal" id="amountModal"><div class="card">
-<h3>Custom Amount</h3>
-<input type="number" class="input" id="amountInput" min="0" step="any" placeholder="0">
-<button class="btn" id="amountApply">Apply</button>
+  <h3>Custom Amount</h3>
+  <input type="number" class="input" id="amountInput" min="0" step="any" placeholder="0">
+  <button class="btn" id="amountApply">Apply</button>
 </div></div>
 <div class="modal" id="timeModal"><div class="card">
-<h3>Custom Delay</h3>
-<div class="tgrid">
+  <h3>Custom Delay</h3>
+  <div class="tgrid">
     <div><input type="number" id="dInput" min="0" placeholder="0"><label>Days</label></div>
     <div><input type="number" id="hInput" min="0" placeholder="0"><label>Hours</label></div>
     <div><input type="number" id="mInput" min="0" placeholder="0"><label>Minutes</label></div>
     <div><input type="number" id="sInput" min="0" placeholder="0"><label>Seconds</label></div>
-</div>
-<button class="btn" id="timeApply">Apply</button>
+  </div>
+  <button class="btn" id="timeApply">Apply</button>
 </div></div>
 <div class="modal" id="confirmModal"><div class="card">
-<div class="summary" id="summary"></div>
-<input type="text" class="input" id="recipientInput" placeholder="Address, .eth, or .wei">
-<div class="ens" id="ens"></div>
-<label class="auto-claim"><input type="checkbox" id="autoClaimChk">🤖 Auto-claim for recipient</label>
-<div class="tip-pre" id="tipPre"></div>
-<button class="btn" id="confirmBtn">CONFIRM SEND</button>
+  <div class="summary" id="summary"></div>
+  <input type="text" class="input" id="recipientInput" placeholder="Address, .eth, or .wei">
+  <div class="ens" id="ens"></div>
+  <label class="auto-claim"><input type="checkbox" id="autoClaimChk">🤖 Auto-claim for recipient</label>
+  <div class="tip-pre" id="tipPre"></div>
+  <button class="btn" id="confirmBtn">CONFIRM SEND</button>
 </div></div>
 <div class="modal" id="approveModal"><div class="card">
-<h3>Approve Token</h3>
-<p id="approveText"></p>
-<button class="btn" id="approveBtn">APPROVE</button>
+  <h3>Approve Token</h3>
+  <p id="approveText"></p>
+  <button class="btn" id="approveBtn">APPROVE</button>
 </div></div>
 <div class="modal" id="tokenModal"><div class="card">
-<h3>Custom Token</h3>
-<input type="text" class="input" id="tokenInput" placeholder="0x… contract address" autocomplete="off" spellcheck="false">
-<div class="ens" id="tokenStatus"></div>
-<div class="tip-pre">Fee-on-transfer or rebasing tokens may strand funds.</div>
-<button class="btn" id="tokenApply">Apply</button>
+  <h3>Custom Token</h3>
+  <input type="text" class="input" id="tokenInput" placeholder="0x… contract address" autocomplete="off" spellcheck="false">
+  <div class="ens" id="tokenStatus"></div>
+  <button class="btn" id="tokenApply">Apply</button>
 </div></div>
 <div class="loading" id="loading"><div class="spinner"></div><p id="loadingText">Processing...</p></div>
-<div class="toast" id="toast"></div><script>
+<div class="toast" id="toast"></div>
+
+<script>
 (()=>{
 'use strict';
 const $ = id => document.getElementById(id);
@@ -226,7 +260,7 @@ const SEL = {
   claim:'0x379607f5', clawback:'0xfcc36bc9', unlock:'0x6198e339',
   withdrawFrom:'0xd4fdc309', multicall:'0xac9650d8', pendingTransfers:'0x6577b86a',
   getOut:'0xd40d4bc6', getIn:'0xe3993ee7',
-  guardians:'0x0633b14a', isWithdrawalApprovalNeeded:'0xabe616b8',
+  guardians:'0x0633b14a', isGuardianApprovalNeeded:'0xaade934f', isWithdrawalApprovalNeeded:'0xabe616b8',
   approve:'0x095ea7b3', allowance:'0xdd62ed3e', decimals:'0x313ce567', symbol:'0x95d89b41',
   resolver:'0x0178b8bf', addr:'0x3b3b57de', ensName:'0x691f3431',
   wnsReverse:'0x9af8b7aa',
@@ -273,9 +307,11 @@ function keccak256(input){
   return o;
 }
 const strip = h => h && h.startsWith('0x') ? h.slice(2) : (h||'');
+const padL  = h => strip(h).padStart(64,'0');
 const padR  = h => { const s=strip(h); return s.padEnd(Math.ceil(s.length/64)*64||64,'0'); };
 const word  = v => (typeof v==='bigint'?v:BigInt(v)).toString(16).padStart(64,'0');
 const isDyn = t => t==='bytes'||t==='string'||t.endsWith('[]');
+const encStatic = (t,v) => t==='address'?padL(v):word(v);
 function encBytes(b){const d=strip(b),L=d.length/2; return word(L)+(L?padR(d):'');}
 function encBytesArr(arr){
   let h='',t='',c=arr.length*32;
@@ -287,7 +323,7 @@ function encode(types,values){
   const heads=[],tails=[];
   for(let i=0;i<types.length;i++){
     if(isDyn(types[i])){heads.push(null); tails.push(encDyn(types[i],values[i]));}
-    else {heads.push(word(values[i])); tails.push('');}
+    else {heads.push(encStatic(types[i],values[i])); tails.push('');}
   }
   let c=types.length*32;
   for(let i=0;i<types.length;i++) if(heads[i]===null){heads[i]=word(c); c+=tails[i].length/2;}
@@ -419,7 +455,7 @@ async function wnsResolve(name){
   return a===ZERO ? null : a;
 }
 async function wnsReverse(addr){
-  const ah=await callOk(WNS, SEL.wnsReverse+word(addr));
+  const ah=await callOk(WNS, SEL.wnsReverse+padL(addr));
   if(!ah) return null;
   const [name]=decode(['string'],ah);
   return name || null;
@@ -436,12 +472,18 @@ const S = {
   step:0,
   tab:'outbound',
   out:[], inb:[], loading:false,
-  hasGuardian:false,
   ens:{}, meta:{},
   progressTimer:null,
 };
 const el = {};
-document.querySelectorAll('[id]').forEach(e=>el[e.id]=e);
+['themeBtn','walletBtn','sendBox','takeBox','cryptoGrid',
+ 'amountRow','timeRow','customAmountOpt','customTimeOpt','customTokenOpt',
+ 'amountModal','timeModal','confirmModal','approveModal','tokenModal',
+ 'amountInput','amountApply','dInput','hInput','mInput','sInput','timeApply',
+ 'tokenInput','tokenStatus','tokenApply',
+ 'summary','recipientInput','ens','confirmBtn','approveText','approveBtn',
+ 'tabs','take','loading','loadingText','toast',
+ 'autoClaimChk','tipPre'].forEach(k=>el[k]=$(k));
 function toast(msg, ms=3000){
   el.toast.textContent=msg;
   el.toast.classList.add('on');
@@ -452,45 +494,38 @@ function showLoad(msg='Processing...'){ el.loadingText.textContent=msg; el.loadi
 function hideLoad(){ el.loading.classList.remove('on'); }
 function showModal(m){ m.classList.add('on'); }
 function hideModal(m){ m.classList.remove('on'); }
-function hideAllModals(){ qsa('.modal.on').forEach(m=>m.classList.remove('on')); }
-const ce=t=>document.createElement(t);
-const qs=s=>document.querySelector(s);
-const qsa=s=>document.querySelectorAll(s);
-const tg=(e,c,b)=>e.classList.toggle(c,b);
-const nw=()=>Date.now()/1000|0;
-const c1=(s,id)=>cd(s,['uint256'],[BigInt(id)]);
-const wf=t=>cd(SEL.withdrawFrom,['address','address','uint256','uint256'],[t.from,S.account,BigInt(t.tokenId),t.amountRaw]);
-async function ss(d){const h=await sendTx({from:S.account,to:SLOW,data:d});showLoad('Confirming...');await waitTx(h);}
+function hideAllModals(){ document.querySelectorAll('.modal.on').forEach(m=>m.classList.remove('on')); }
 const tokenColor = a => `hsl(${parseInt(a.slice(2,8),16)%360},55%,45%)`;
 function render(){
-  tg(el.sendBox,'on', S.view==='send');
-  tg(el.takeBox,'on', S.view==='take');
-  tg(el.takeBox,'peek', S.view==='send');
-  tg(el.sendBox,'peek', S.view==='take');
-  tg(document.body,'v-take', S.view==='take');
-  tg(el.cryptoGrid,'on', S.view==='send');
-  tg(el.amountRow,'on', S.view==='send' && S.step>=1);
-  tg(el.timeRow,'on', S.view==='send' && S.step>=2);
-  tg(el.customTokenOpt,'on', S.view==='send');
-  const isCustomTok = S.token && !qs(`.crypto[data-token="${S.token}" i]`);
-  tg(el.customTokenOpt,'sel', isCustomTok);
+  el.sendBox.classList.toggle('on', S.view==='send');
+  el.takeBox.classList.toggle('on', S.view==='take');
+  el.takeBox.classList.toggle('peek', S.view==='send');
+  el.sendBox.classList.toggle('peek', S.view==='take');
+  document.body.classList.toggle('v-take', S.view==='take');
+  document.body.classList.toggle('v-send', S.view==='send');
+  el.cryptoGrid.classList.toggle('on', S.view==='send');
+  el.amountRow.classList.toggle('on',  S.view==='send' && S.step>=1);
+  el.timeRow.classList.toggle('on',    S.view==='send' && S.step>=2);
+  el.customTokenOpt.classList.toggle('on', S.view==='send');
+  const isCustomTok = S.token && !document.querySelector(`.crypto[data-token="${S.token}" i]`);
+  el.customTokenOpt.classList.toggle('sel', isCustomTok);
   el.customTokenOpt.style.background = isCustomTok ? tokenColor(S.token) : '';
   el.customTokenOpt.textContent = isCustomTok ? S.symbol : '+ CUSTOM TOKEN';
-  tg(el.cryptoGrid,'dim', isCustomTok);
-  tg(el.tabs,'on', S.view==='take');
-  tg(el.take,'on', S.view==='take');
+  el.cryptoGrid.classList.toggle('dim', isCustomTok);
+  el.tabs.classList.toggle('on', S.view==='take');
+  el.take.classList.toggle('on', S.view==='take');
   if(S.view!=='send'){ hideAllModals(); }
   if(S.view==='take') renderTransfers();
-  qsa('.crypto').forEach(c=>tg(c,'sel', c.dataset.token===S.token));
-  const customAmt = S.amount && !qs(`#amountRow [data-amount="${S.amount}"]`);
-  qsa('#amountRow .opt').forEach(o=>{
+  document.querySelectorAll('.crypto').forEach(c=>c.classList.toggle('sel', S.token && c.dataset.token.toLowerCase()===S.token.toLowerCase()));
+  const customAmt = S.amount && !document.querySelector(`#amountRow [data-amount="${S.amount}"]`);
+  document.querySelectorAll('#amountRow .opt').forEach(o=>{
     const v=o.dataset.amount, on = v && parseFloat(v)===S.amount;
-    tg(o,'sel', on || (o===el.customAmountOpt && customAmt));
+    o.classList.toggle('sel', on || (o===el.customAmountOpt && customAmt));
   });
-  const customDly = S.delay && !qs(`#timeRow [data-time="${S.delay}"]`);
-  qsa('#timeRow .opt').forEach(o=>{
+  const customDly = S.delay && !document.querySelector(`#timeRow [data-time="${S.delay}"]`);
+  document.querySelectorAll('#timeRow .opt').forEach(o=>{
     const v=o.dataset.time, on = v && parseInt(v)===S.delay;
-    tg(o,'sel', on || (o===el.customTimeOpt && customDly));
+    o.classList.toggle('sel', on || (o===el.customTimeOpt && customDly));
   });
   el.customAmountOpt.textContent = customAmt ? fmtNum(S.amount) : '???';
   el.customTimeOpt.textContent = customDly ? S.delayDisplay : '???';
@@ -520,15 +555,15 @@ function renderTransfers(){
     return;
   }
   if(!list.length){
-    const wrap = ce('div');
+    const wrap = document.createElement('div');
     wrap.className = 'empty';
     wrap.textContent = `No ${S.tab} transfers.`;
     if(S.tab === 'outbound'){
-      const btn = ce('button');
+      const btn = document.createElement('button');
       btn.className = 'btn empty-cta';
       btn.textContent = 'Send your first';
       btn.onclick = () => setView('send');
-      wrap.appendChild(ce('br'));
+      wrap.appendChild(document.createElement('br'));
       wrap.appendChild(btn);
     }
     c.appendChild(wrap);
@@ -540,15 +575,15 @@ function renderTransfers(){
     if(!groups.has(k)) groups.set(k, {sym:t.symbol, token:t.token, items:[]});
     groups.get(k).items.push(t);
   }
-  const now = nw();
+  const now = Date.now()/1000|0;
   for(const [, g] of groups){
-    const head=ce('div');
+    const head=document.createElement('div');
     head.className='label';
     head.textContent = (g.sym==='???' ? shortAddr(g.token) : g.sym) + ' Transfers';
     c.appendChild(head);
-    const wrap=ce('div');
+    const wrap=document.createElement('div');
     wrap.className='line-wrap';
-    const line=ce('div');
+    const line=document.createElement('div');
     line.className='line';
     const sym = tokSym(g.sym);
     line.dataset.sym = sym;
@@ -573,16 +608,16 @@ function renderTransfers(){
   ensureProgressTimer();
 }
 function makeArrow(t, sym){
-  const now=nw();
+  const now=Date.now()/1000|0;
   const progress=Math.min(100, ((now-t.timestamp)/t.delay)*100);
   const expired = now >= t.unlockTime;
   const inbReady = S.tab==='inbound' && expired;
   const clawable = S.tab==='outbound' && now >= t.unlockTime+GRACE;
-  const bar=ce('div');
+  const bar=document.createElement('div');
   bar.className='bar';
   bar.dataset.id=t.id;
   bar.style.width=Math.min(100,progress)+'%';
-  const arr=ce('div');
+  const arr=document.createElement('div');
   arr.className = 'arrow' + (inbReady?' ready':clawable?' recover':'') + (t.tipped?' tipped':'');
   arr.textContent = inbReady ? '★' : clawable ? '↩' : !expired ? '➤' : '✓';
   arr.dataset.id=t.id; arr.dataset.ts=t.timestamp; arr.dataset.delay=t.delay;
@@ -591,7 +626,7 @@ function makeArrow(t, sym){
   arr.style.left=Math.min(95,progress)+'%';
   const direction = S.tab==='outbound' ? 'To' : 'From';
   const counterparty = S.tab==='outbound' ? t.to : t.from;
-  const tip = ce('div');
+  const tip = document.createElement('div');
   tip.className = 'tip';
   const status = inbReady ? 'Ready to claim'
     : clawable ? 'Ready to recover'
@@ -606,16 +641,13 @@ function makeArrow(t, sym){
   if(t.guardianPending && S.tab==='outbound' && !expired){
     rows.push(['Guardian:', '⏳ Required for reclaim', false]);
   }
-  if(S.tab==='inbound' && S.hasGuardian && expired){
-    rows.push(['Guardian:', '⏳ Required to withdraw', false]);
-  }
   if(t.tipped){
     rows.push(['Auto-claim:', S.tab==='inbound' ? '🤖 keeper will settle' : '🤖 tip attached', false]);
   }
   for(const [k,v,green] of rows){
-    const tt = ce('div'); tt.className='tt';
-    const lbl = ce('span'); lbl.className='tl'; lbl.textContent=k;
-    const val = ce('span'); val.textContent=v;
+    const tt = document.createElement('div'); tt.className='tt';
+    const lbl = document.createElement('span'); lbl.className='tl'; lbl.textContent=k;
+    const val = document.createElement('span'); val.textContent=v;
     if(green) val.style.color='#4caf50';
     tt.appendChild(lbl); tt.appendChild(val); tip.appendChild(tt);
   }
@@ -628,7 +660,7 @@ function makeArrow(t, sym){
   });
   arr.onclick = e => {
     e.stopPropagation();
-    const N = nw();
+    const N = Date.now()/1000|0;
     if(S.tab==='inbound' && N>=t.unlockTime){
       if(confirm(`Claim ${fmtNum(t.amount)} ${sym}?`)) claim(t);
     } else if(S.tab==='outbound' && N<t.unlockTime){
@@ -652,9 +684,9 @@ function clearProgressTimer(){
 }
 function updateProgress(){
   if(S.view!=='take'){ clearProgressTimer(); return; }
-  const now=nw();
+  const now=Date.now()/1000|0;
   let stale=false;
-  qsa('.arrow').forEach(a=>{
+  document.querySelectorAll('.arrow').forEach(a=>{
     const ts=+a.dataset.ts, d=+a.dataset.delay;
     const p=Math.min(100,((now-ts)/d)*100);
     a.style.left=Math.min(95,p)+'%';
@@ -671,13 +703,6 @@ async function ensureMainnet(){
   try { await rpc('wallet_switchEthereumChain', [{chainId: MAINNET}]); return true; }
   catch(e){ return false; }
 }
-function setAccount(a){
-  S.account=a; S.ensName=null;
-  S.out=[]; S.inb=[]; S.hasGuardian=false;
-  reverseAny(a).then(n=>{S.ensName=n; updateWallet();}).catch(()=>{});
-  updateWallet();
-  if(S.view==='take') loadTransfers();
-}
 async function connect(){
   if(!window.ethereum){
     window.open('https://metamask.io/download.html', '_blank');
@@ -687,14 +712,16 @@ async function connect(){
     const accs = await rpc('eth_requestAccounts', []);
     if(!accs?.length) return false;
     if(!await ensureMainnet()){ toast('Switch to Ethereum mainnet'); return false; }
-    setAccount(accs[0]);
+    S.account = accs[0];
+    reverseAny(S.account).then(n => { S.ensName = n; updateWallet(); }).catch(()=>{});
+    updateWallet();
+    if(S.view==='take') loadTransfers();
     return true;
   } catch(e){ toast(e.message || 'Connect failed'); return false; }
 }
 function disconnect(){
   S.account = S.ensName = null;
   S.out = []; S.inb = [];
-  S.hasGuardian = false;
   setView('home');
   updateWallet();
   toast('Disconnected');
@@ -771,7 +798,7 @@ async function updateTipPreview(){
   el.tipPre.textContent = 'Estimating tip…';
   S.tip = await estimateTip(S.token);
   if(!S.autoClaim) return;
-  el.tipPre.textContent = `Keeper tip: ~${formatUnits(S.tip, 18)} ETH (refundable if recipient settles directly)`;
+  el.tipPre.textContent = `Keeper tip: ~${formatUnits(S.tip, 18)} ETH`;
 }
 async function tokenMeta(addr){
   const k=addr.toLowerCase();
@@ -783,7 +810,7 @@ async function tokenMeta(addr){
     const [decimals] = decode(['uint256'], dh);
     return S.meta[k] = {symbol, decimals: Number(decimals)};
   } catch(e){
-    return {symbol:'???', decimals:18};
+    return S.meta[k] = {symbol:'???', decimals:18};
   }
 }
 async function checkAllowance(token, owner, need){
@@ -793,22 +820,18 @@ async function checkAllowance(token, owner, need){
 }
 async function loadTransfers(){
   if(!S.account) return;
-  const account = S.account;
-  const stale = () => S.account !== account;
   S.loading=true; renderTransfers();
   try {
     const [oh,ih,gh] = await Promise.all([
-      sCall(cd(SEL.getOut,['address'],[account])),
-      sCall(cd(SEL.getIn,['address'],[account])),
-      sCall(cd(SEL.guardians,['address'],[account])),
+      sCall(cd(SEL.getOut,['address'],[S.account])),
+      sCall(cd(SEL.getIn,['address'],[S.account])),
+      sCall(cd(SEL.guardians,['address'],[S.account])),
     ]);
-    if(stale()) return;
     const [oIds] = decode(['uint256[]'], oh);
     const [iIds] = decode(['uint256[]'], ih);
     const hasGuardian = ('0x'+gh.slice(-40)).toLowerCase() !== ZERO;
     const all = Array.from(new Map([...oIds,...iIds].map(id=>[id.toString(),id])).values());
     const pts = await Promise.all(all.map(id => sCall(cd(SEL.pendingTransfers,['uint256'],[id]))));
-    if(stale()) return;
     const map = new Map();
     all.forEach((id,i)=>{
       const [ts,from,to,tid,amt] = decode(['uint256','address','address','uint256','uint256'], pts[i]);
@@ -831,34 +854,30 @@ async function loadTransfers(){
         timestamp, delay, unlockTime: timestamp+delay,
       };
     };
-    const outArr = oIds.map(build).filter(Boolean).sort((a,b)=>a.unlockTime-b.unlockTime);
-    const inArr  = iIds.map(build).filter(Boolean).sort((a,b)=>a.unlockTime-b.unlockTime);
-    if(hasGuardian && outArr.length){
-      const need = await Promise.all(outArr.map(t =>
+    S.out = oIds.map(build).filter(Boolean).sort((a,b)=>a.unlockTime-b.unlockTime);
+    S.inb = iIds.map(build).filter(Boolean).sort((a,b)=>a.unlockTime-b.unlockTime);
+    if(hasGuardian && S.out.length){
+      const need = await Promise.all(S.out.map(t =>
         sCall(cd(SEL.isWithdrawalApprovalNeeded,
           ['address','address','uint256','uint256'],
-          [account, account, BigInt(t.tokenId), t.amountRaw]))));
-      if(stale()) return;
-      need.forEach((r,i) => { outArr[i].guardianPending = decode(['uint256'], r)[0] !== 0n; });
+          [S.account, S.account, BigInt(t.tokenId), t.amountRaw]))));
+      need.forEach((r,i) => { S.out[i].guardianPending = decode(['uint256'], r)[0] !== 0n; });
     }
-    const tipList = [...inArr, ...outArr];
+    const tipList = [...S.inb, ...S.out];
     if(tipList.length){
       const gate = await getGate();
       if(gate){
         const tipR = await Promise.all(tipList.map(t =>
-          callOk(gate, c1(SEL.tips, t.id))));
-        if(stale()) return;
+          callOk(gate, cd(SEL.tips, ['uint256'], [BigInt(t.id)]))));
         tipR.forEach((r,i) => {
           if(r){ const [amt] = decode(['uint256'], r); if(amt > 0n) tipList[i].tipped = true; }
         });
       }
     }
-    if(stale()) return;
-    S.out = outArr; S.inb = inArr; S.hasGuardian = hasGuardian;
   } catch(e){
-    if(!stale()) toast('Failed to load transfers');
+    toast('Failed to load transfers');
   } finally {
-    if(!stale()){ S.loading=false; renderTransfers(); }
+    S.loading=false; renderTransfers();
   }
 }
 async function deposit(){
@@ -869,7 +888,7 @@ async function deposit(){
     const wei = parseUnits(S.amount, meta.decimals);
     let data, value;
     if(S.autoClaim){
-      S.tip||(S.tip=await estimateTip(S.token));
+      S.tip = await estimateTip(S.token);
       data = cd(SEL.depositToWithTip,
         ['address','address','uint256','uint96','uint256','bytes'],
         [isETH?ZERO:S.token, S.resolved, wei, BigInt(S.delay), S.tip, '0x']);
@@ -893,65 +912,52 @@ async function deposit(){
   } finally { hideLoad(); }
 }
 async function claim(t){
-  const now = nw();
+  const now = Date.now()/1000|0;
   if(now < t.unlockTime){ toast(`${fmtTime(t.unlockTime-now)} remaining`); return; }
-  const guardianMode = S.hasGuardian;
-  showLoad(guardianMode ? 'Unlocking...' : 'Claiming...');
+  showLoad('Claiming...');
   try {
-    await ss(c1(guardianMode?SEL.unlock:SEL.claim, t.id));
-    toast(guardianMode
-      ? 'Unlocked. Withdraw via guardian to receive underlying.'
-      : 'Claimed!', 6000);
+    const data = cd(SEL.claim, ['uint256'], [BigInt(t.id)]);
+    const hash = await sendTx({from:S.account, to:SLOW, data});
+    showLoad('Confirming...');
+    await waitTx(hash);
+    toast('Claimed!', 5000);
     loadTransfers();
   } catch(e){ toast(e.message || 'Failed'); }
   finally { hideLoad(); }
 }
-async function refundTipIfAny(t){
-  if(!t.tipped) return;
-  const gate = await getGate();
-  if(!gate || gate === ZERO) return;
-  try {
-    showLoad('Refunding tip...');
-    const data = c1(SEL.refundTip, t.id);
-    const hash = await sendTx({from:S.account, to:gate, data});
-    showLoad('Confirming refund...');
-    await waitTx(hash);
-    toast('Tip refunded!', 4000);
-  } catch(e){
-    toast('Tip is still on the gate — call gate.refundTip later to recover', 6000);
-  }
-}
 async function clawback(t){
-  const now = nw();
+  const now = Date.now()/1000|0;
   const ready = t.unlockTime + GRACE;
   if(now < ready){ toast(`Recovery ready in ${fmtTime(ready-now)}`); return; }
   showLoad('Recovering...');
   try {
-    const data = S.hasGuardian
-      ? c1(SEL.clawback,t.id)
-      : cd(SEL.multicall,['bytes[]'],[[c1(SEL.clawback,t.id),wf(t)]]);
-    await ss(data);
-    toast(S.hasGuardian
-      ? 'Recovered. Coordinate with guardian to withdraw underlying.'
-      : 'Recovered!', 6000);
-    await refundTipIfAny(t);
+    const cb = cd(SEL.clawback, ['uint256'], [BigInt(t.id)]);
+    const w = cd(SEL.withdrawFrom,
+      ['address','address','uint256','uint256'],
+      [t.from, S.account, BigInt(t.tokenId), t.amountRaw]);
+    const data = cd(SEL.multicall, ['bytes[]'], [[cb, w]]);
+    const hash = await sendTx({from:S.account, to:SLOW, data});
+    showLoad('Confirming...');
+    await waitTx(hash);
+    toast('Recovered!', 5000);
     loadTransfers();
   } catch(e){ toast(e.message || 'Failed'); }
   finally { hideLoad(); }
 }
 async function reverseAndWithdraw(t){
-  const now = nw();
+  const now = Date.now()/1000|0;
   if(now >= t.unlockTime){ toast("Timelock expired — can't reverse"); return; }
   showLoad('Reversing transfer...');
   try {
-    const data = S.hasGuardian
-      ? c1(SEL.reverse,t.id)
-      : cd(SEL.multicall,['bytes[]'],[[c1(SEL.reverse,t.id),wf(t)]]);
-    await ss(data);
-    toast(S.hasGuardian
-      ? 'Reversed. Coordinate with guardian to withdraw underlying.'
-      : 'Reversed and returned!', 6000);
-    await refundTipIfAny(t);
+    const r = cd(SEL.reverse, ['uint256'], [BigInt(t.id)]);
+    const w = cd(SEL.withdrawFrom,
+      ['address','address','uint256','uint256'],
+      [t.from, S.account, BigInt(t.tokenId), t.amountRaw]);
+    const data = cd(SEL.multicall, ['bytes[]'], [[r, w]]);
+    const hash = await sendTx({from:S.account, to:SLOW, data});
+    showLoad('Confirming...');
+    await waitTx(hash);
+    toast('Reversed and returned!', 5000);
     loadTransfers();
   } catch(e){ toast(e.message || 'Failed'); }
   finally { hideLoad(); }
@@ -1121,29 +1127,327 @@ el.tabs.addEventListener('click', e => {
   renderTransfers();
 });
 document.addEventListener('click', e => {
-  qsa('.modal.on').forEach(m => {
+  document.querySelectorAll('.modal.on').forEach(m => {
     if(e.target===m) m.classList.remove('on');
   });
 });
 document.addEventListener('keydown', e => {
   if(e.key !== 'Escape') return;
-  if(qs('.modal.on')) hideAllModals();
+  if(document.querySelector('.modal.on')) hideAllModals();
   else if(S.view !== 'home') setView('home');
 });
-window.ethereum?.on?.('accountsChanged', accs => {
-  if(!accs?.length){ disconnect(); return; }
-  setAccount(accs[0]);
-});
-window.ethereum?.on?.('chainChanged', id => {
-  if(+id === 1){
-    if(S.account && S.view==='take') loadTransfers();
-  } else if(S.account){
-    toast('Switched off Ethereum mainnet');
+// === PREVIEW MOCK LAYER ===
+const NOW = Date.now()/1000|0;
+const ADDR_ALICE = '0xa11ce0a11ce0a11ce0a11ce0a11ce0a11ce0a11c';
+const ADDR_BOB   = '0xb0bb0bb0bb0bb0bb0bb0bb0bb0bb0bb0bb0bb0bb';
+const ADDR_CAROL = '0xc4a401c4a401c4a401c4a401c4a401c4a401c4a4';
+const ADDR_DAVE  = '0xd4ec0d4ec0d4ec0d4ec0d4ec0d4ec0d4ec0d4ec0';
+const ADDR_EVE   = '0xeded0eded0eded0eded0eded0eded0eded0eded0';
+const ADDR_FRANK = '0xf73a4f73a4f73a4f73a4f73a4f73a4f73a4f73a4';
+const TOK_ETH = '0x0000000000000000000000000000000000000000';
+const TOK_USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+const TOK_USDT = '0xdac17f958d2ee523a2206206994597c13d831ec7';
+const TOK_BOLD = '0x6440f144b7e50d6a8439336510312d2f54beb01d';
+
+let _mockId = 0;
+const mtx = (sym, amt, delay, ts, from, to, opts={}) => {
+  const dec = opts.decimals !== undefined ? opts.decimals : ((sym==='USDC' || sym==='USDT') ? 6 : 18);
+  const tokens = {ETH:TOK_ETH, USDC:TOK_USDC, USDT:TOK_USDT, BOLD:TOK_BOLD};
+  return {
+    id: String(++_mockId),
+    from, to,
+    tokenId: 'mock-'+_mockId,
+    token: opts.token || tokens[sym] || TOK_ETH,
+    symbol: sym,
+    amount: amt,
+    amountRaw: BigInt(Math.floor(amt * 10**dec)),
+    timestamp: ts, delay, unlockTime: ts + delay,
+    guardianPending: !!opts.guardian,
+    tipped: !!opts.tipped
+  };
+};
+const TOK_PEPE = '0x6982508145454ce325ddbe47a25d4ec3d2311933';
+const TOK_MOG = '0xaaee1a9723aadb7afa2810263653a34ba2c21c7a';
+const TOK_TURBO = '0xa35923162c49cf95e6bf26623385eb431ad920d3';
+const TOK_LDO = '0x5a98fcbea516cf06857215779fd812ca3bef1b32';
+const TOK_AAVE = '0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9';
+const TOK_LINK = '0x514910771af9ca656af840dff83e8264ecf986ca';
+const TOK_UNI  = '0x1f9840a85d5af5bf1d1762f925bdaddc4201f984';
+const TOK_DAI  = '0x6b175474e89094c44da98b954eedeac495271d0f';
+const TOK_WETH = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2';
+const TOK_WBTC = '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599';
+const TOK_SHIB = '0x95ad61b0a150d79219dcf64e1e6cc01f0b64c4ce';
+const TOK_UNKNOWN = '0x77beef00deadbeefcafe123456789abcdef01234';
+const TOK_UNKNOWN2 = '0xb1ade000b1ade000b1ade000b1ade000b1ade000';
+const TOK_UNKNOWN3 = '0xfade1234fade1234fade1234fade1234fade1234';
+const TOK_UNKNOWN4 = '0xcafe5678cafe5678cafe5678cafe5678cafe5678';
+const ADDR_WHALE = '0xff8a1eff8a1eff8a1eff8a1eff8a1eff8a1eff8a';
+const ADDR_GRACE = '0x91ace091ace091ace091ace091ace091ace091ac';
+
+const PERSONAS = {
+  alice: {
+    name: 'alice.eth',
+    address: ADDR_ALICE,
+    desc: '5 outbound, incl. PEPE custom token',
+    out: [
+      mtx('USDC', 100, 3600, NOW-1080, ADDR_ALICE, ADDR_BOB),
+      mtx('ETH',  0.5, 86400, NOW-60480, ADDR_ALICE, ADDR_CAROL),
+      mtx('USDT', 500, 600, NOW-1800, ADDR_ALICE, ADDR_DAVE),
+      mtx('BOLD', 42, 600, NOW-GRACE-3600, ADDR_ALICE, ADDR_EVE),
+      mtx('PEPE', 1500000, 86400, NOW-21600, ADDR_ALICE, ADDR_BOB, {token:TOK_PEPE}),
+    ],
+    inb: []
+  },
+  bob: {
+    name: null,
+    address: ADDR_BOB,
+    desc: 'Receiving 4 transfers (incl. unknown ERC-20), some ready',
+    out: [],
+    inb: [
+      mtx('ETH',  1, 3600, NOW-1800, ADDR_ALICE, ADDR_BOB),
+      mtx('USDC', 250, 600, NOW-700, ADDR_CAROL, ADDR_BOB),
+      mtx('BOLD', 99, 86400, NOW-86400*2, ADDR_DAVE, ADDR_BOB),
+      mtx('???', 88, 600, NOW-300, ADDR_FRANK, ADDR_BOB, {token:TOK_UNKNOWN}),
+    ]
+  },
+  carol: {
+    name: 'carol.eth',
+    address: ADDR_CAROL,
+    desc: 'Mixed activity, with guardian on one outbound',
+    out: [
+      mtx('USDC', 200, 3600, NOW-2160, ADDR_CAROL, ADDR_FRANK, {guardian:true}),
+      mtx('ETH',  0.25, 86400, NOW-43200, ADDR_CAROL, ADDR_BOB),
+    ],
+    inb: [
+      mtx('USDT', 50, 600, NOW-450, ADDR_DAVE, ADDR_CAROL),
+      mtx('BOLD', 1000, 600, NOW-700, ADDR_EVE, ADDR_CAROL),
+    ]
+  },
+  dana: {
+    name: null,
+    address: '0x0000000000000000000000000000000000000099',
+    desc: 'No transfers yet — empty state',
+    out: [], inb: []
+  },
+  whale: {
+    name: 'whale.eth',
+    address: ADDR_WHALE,
+    desc: 'Many tokens, mid-progress + end-state clusters — scrollable',
+    out: [
+      mtx('ETH', 5, 86400, NOW-43200, ADDR_WHALE, ADDR_BOB),
+      mtx('ETH', 0.3, 7200, NOW-3600, ADDR_WHALE, ADDR_CAROL),
+      mtx('ETH', 0.05, 1200, NOW-600, ADDR_WHALE, ADDR_DAVE),
+      mtx('ETH', 0.2, 1200, NOW-900, ADDR_WHALE, ADDR_FRANK),
+      mtx('ETH', 0.4, 7200, NOW-5400, ADDR_WHALE, ADDR_EVE),
+      mtx('ETH', 0.1, 600, NOW-100, ADDR_WHALE, ADDR_CAROL),
+      mtx('ETH', 12, 86400*7, NOW-86400, ADDR_WHALE, ADDR_DAVE),
+      mtx('ETH', 0.001, 600, NOW-400, ADDR_WHALE, ADDR_FRANK),
+      mtx('USDC', 1000, 3600, NOW-2700, ADDR_WHALE, ADDR_BOB, {tipped:true}),
+      mtx('USDC', 50000, 86400, NOW-43200, ADDR_WHALE, ADDR_FRANK, {guardian:true}),
+      mtx('USDC', 5, 600, NOW-200, ADDR_WHALE, ADDR_BOB),
+      mtx('USDC', 10, 600, NOW-300, ADDR_WHALE, ADDR_CAROL),
+      mtx('USDT', 200, 600, NOW-1200, ADDR_WHALE, ADDR_EVE),
+      mtx('USDT', 1000, 3600, NOW-3000, ADDR_WHALE, ADDR_BOB),
+      mtx('BOLD', 500, 86400, NOW-86500, ADDR_WHALE, ADDR_CAROL),
+      mtx('BOLD', 100, 600, NOW-GRACE-7200, ADDR_WHALE, ADDR_DAVE),
+      mtx('BOLD', 200, 600, NOW-GRACE-3600, ADDR_WHALE, ADDR_BOB),
+      mtx('BOLD', 50, 1200, NOW-GRACE-2400, ADDR_WHALE, ADDR_FRANK),
+      mtx('PEPE', 5000000, 86400, NOW-21600, ADDR_WHALE, ADDR_BOB, {token:TOK_PEPE, tipped:true}),
+      mtx('PEPE', 7000000, 86400, NOW-60000, ADDR_WHALE, ADDR_CAROL, {token:TOK_PEPE}),
+      mtx('MOG', 10000000, 3600, NOW-1800, ADDR_WHALE, ADDR_FRANK, {token:TOK_MOG}),
+      mtx('MOG', 5000000, 600, NOW-300, ADDR_WHALE, ADDR_DAVE, {token:TOK_MOG}),
+      mtx('TURBO', 50000, 600, NOW-200, ADDR_WHALE, ADDR_EVE, {token:TOK_TURBO}),
+      mtx('AAVE', 50, 86400, NOW-43200, ADDR_WHALE, ADDR_BOB, {token:TOK_AAVE}),
+      mtx('LINK', 100, 3600, NOW-1800, ADDR_WHALE, ADDR_FRANK, {token:TOK_LINK}),
+      mtx('UNI', 25, 86400*3, NOW-86400, ADDR_WHALE, ADDR_EVE, {token:TOK_UNI}),
+      mtx('DAI', 1500, 600, NOW-300, ADDR_WHALE, ADDR_BOB, {token:TOK_DAI}),
+      mtx('WETH', 0.5, 86400, NOW-21600, ADDR_WHALE, ADDR_CAROL, {token:TOK_WETH}),
+      mtx('WBTC', 0.01, 86400, NOW-43200, ADDR_WHALE, ADDR_DAVE, {token:TOK_WBTC, decimals:8}),
+      mtx('SHIB', 100000000, 600, NOW-200, ADDR_WHALE, ADDR_FRANK, {token:TOK_SHIB}),
+      mtx('???', 999, 86400, NOW-21600, ADDR_WHALE, ADDR_EVE, {token:TOK_UNKNOWN3}),
+    ],
+    inb: [
+      mtx('ETH', 2.5, 3600, NOW-1080, ADDR_BOB, ADDR_WHALE, {tipped:true}),
+      mtx('ETH', 0.05, 600, NOW-500, ADDR_CAROL, ADDR_WHALE),
+      mtx('USDT', 100, 3600, NOW-1800, ADDR_FRANK, ADDR_WHALE, {tipped:true}),
+      mtx('USDC', 5000, 86400, NOW-43200, ADDR_DAVE, ADDR_WHALE),
+      mtx('USDC', 25, 1200, NOW-600, ADDR_BOB, ADDR_WHALE),
+      mtx('USDC', 100, 600, NOW-700, ADDR_FRANK, ADDR_WHALE),
+      mtx('USDC', 75, 600, NOW-800, ADDR_DAVE, ADDR_WHALE),
+      mtx('USDC', 150, 1200, NOW-1500, ADDR_EVE, ADDR_WHALE),
+      mtx('USDC', 50, 600, NOW-300, ADDR_BOB, ADDR_WHALE),
+      mtx('USDC', 200, 600, NOW-100, ADDR_CAROL, ADDR_WHALE),
+      mtx('USDT', 2000, 3600, NOW-3500, ADDR_EVE, ADDR_WHALE),
+      mtx('BOLD', 50, 600, NOW-650, ADDR_BOB, ADDR_WHALE),
+      mtx('PEPE', 1000000, 600, NOW-300, ADDR_CAROL, ADDR_WHALE, {token:TOK_PEPE}),
+      mtx('LDO', 250, 86400, NOW-87400, ADDR_DAVE, ADDR_WHALE, {token:TOK_LDO}),
+      mtx('AAVE', 10, 3600, NOW-1800, ADDR_DAVE, ADDR_WHALE, {token:TOK_AAVE}),
+      mtx('LINK', 50, 600, NOW-700, ADDR_FRANK, ADDR_WHALE, {token:TOK_LINK}),
+      mtx('DAI', 800, 86400, NOW-43200, ADDR_EVE, ADDR_WHALE, {token:TOK_DAI}),
+      mtx('WBTC', 0.005, 86400*2, NOW-86400, ADDR_BOB, ADDR_WHALE, {token:TOK_WBTC, decimals:8}),
+      mtx('SHIB', 50000000, 600, NOW-650, ADDR_CAROL, ADDR_WHALE, {token:TOK_SHIB}),
+      mtx('???', 333, 3600, NOW-1500, ADDR_FRANK, ADDR_WHALE, {token:TOK_UNKNOWN2}),
+      mtx('???', 777, 600, NOW-650, ADDR_EVE, ADDR_WHALE, {token:TOK_UNKNOWN}),
+      mtx('???', 1234, 86400, NOW-43200, ADDR_DAVE, ADDR_WHALE, {token:TOK_UNKNOWN4}),
+    ]
+  },
+  grace: {
+    name: 'grace.eth',
+    address: ADDR_GRACE,
+    desc: 'Guardian-protected — claim routes through unlock; reclaim is gated',
+    hasGuardian: true,
+    out: [
+      mtx('USDC', 300, 3600, NOW-1080, ADDR_GRACE, ADDR_BOB, {guardian:true}),
+      mtx('ETH',  0.2, 86400, NOW-21600, ADDR_GRACE, ADDR_FRANK, {guardian:true}),
+    ],
+    inb: [
+      mtx('USDC', 150, 600, NOW-1200, ADDR_ALICE, ADDR_GRACE),
+      mtx('BOLD', 25, 600, NOW-900, ADDR_CAROL, ADDR_GRACE),
+    ]
   }
-});
-window.addEventListener('focus', () => { if(S.view==='take' && S.account) loadTransfers(); });
-if(!window.ethereum) el.walletBtn.textContent = 'Install Wallet';
+};
+
+let mockPersona = 'alice';
+
+connect = async () => {
+  const p = PERSONAS[mockPersona];
+  S.account = p.address;
+  S.ensName = p.name;
+  updateWallet();
+  return true;
+};
+disconnect = () => {
+  S.account = null; S.ensName = null;
+  S.out = []; S.inb = [];
+  S.hasGuardian = false;
+  setView('home'); updateWallet();
+  toast('Disconnected (preview)');
+};
+loadTransfers = async () => {
+  if(!S.account) return;
+  const callPersona = mockPersona;
+  S.loading = true; renderTransfers();
+  await new Promise(r => setTimeout(r, 250));
+  if(callPersona !== mockPersona) return;
+  const p = PERSONAS[mockPersona];
+  S.out = [...p.out];
+  S.inb = [...p.inb];
+  S.hasGuardian = !!p.hasGuardian;
+  S.loading = false; renderTransfers();
+};
+ensureMainnet = async () => true;
+estimateTip = async (token) => (token === TOK_ETH ? 240_000_000_000_000n : 360_000_000_000_000n);
+getGate = async () => '0x000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const _approved = new Set();
+checkAllowance = async (tok) => tok === ZERO || _approved.has(tok.toLowerCase());
+tokenMeta = async (addr) => {
+  const k = (addr || '').toLowerCase();
+  if(k === TOK_ETH) return {symbol:'ETH', decimals:18};
+  if(k === TOK_USDC) return {symbol:'USDC', decimals:6};
+  if(k === TOK_USDT) return {symbol:'USDT', decimals:6};
+  if(k === TOK_BOLD) return {symbol:'BOLD', decimals:18};
+  return {symbol:'TKN', decimals:18};
+};
+resolveRecipient = async (input) => {
+  S.resolving = true; el.confirmBtn.disabled = true;
+  el.ens.textContent = 'Resolving...'; el.ens.className='ens';
+  await new Promise(r => setTimeout(r, 200));
+  try {
+    if(/^0x[a-fA-F0-9]{40}$/.test(input)){
+      S.resolved = input; S.resolvedName = null;
+      el.ens.textContent = 'Valid address'; el.ens.className='ens ok';
+      updateSummary();
+      return true;
+    }
+    if(input.includes('.')){
+      S.resolved = '0xd0ec' + 'd0ec'.repeat(9);
+      S.resolvedName = input;
+      el.ens.textContent = `Resolved to: ${shortAddr(S.resolved)}`;
+      el.ens.className='ens ok';
+      updateSummary();
+      return true;
+    }
+    el.ens.textContent='Invalid address or name';
+    el.ens.className='ens err';
+    return false;
+  } finally {
+    S.resolving = false;
+    el.confirmBtn.disabled = false;
+  }
+};
+const _simulate = async (msg, doneMsg, fn) => {
+  showLoad(msg);
+  await new Promise(r => setTimeout(r, 700));
+  showLoad('Confirming...');
+  await new Promise(r => setTimeout(r, 1000));
+  hideLoad();
+  toast(doneMsg, 5000);
+  if(fn) fn();
+};
+deposit = async () => {
+  await _simulate('Creating time-locked transfer...', 'Sent! Funds locked in SLOW.', () => {
+    if(S.token && S.amount && S.delay && S.resolved){
+      const t = mtx(S.symbol || 'TKN', S.amount, S.delay,
+                    Date.now()/1000|0, PERSONAS[mockPersona].address, S.resolved,
+                    {tipped: S.autoClaim});
+      t.token = S.token;
+      PERSONAS[mockPersona].out.push(t);
+    }
+    setView('home');
+  });
+};
+claim = async (t) => {
+  await _simulate('Claiming...', 'Claimed!', () => {
+    PERSONAS[mockPersona].inb = PERSONAS[mockPersona].inb.filter(x => x.id !== t.id);
+    loadTransfers();
+  });
+};
+clawback = async (t) => {
+  await _simulate('Recovering...', 'Recovered!', () => {
+    PERSONAS[mockPersona].out = PERSONAS[mockPersona].out.filter(x => x.id !== t.id);
+  });
+  if(t.tipped) await _simulate('Refunding tip...', 'Tip refunded!', () => {});
+  loadTransfers();
+};
+reverseAndWithdraw = async (t) => {
+  await _simulate('Reversing transfer...', 'Reversed and returned!', () => {
+    PERSONAS[mockPersona].out = PERSONAS[mockPersona].out.filter(x => x.id !== t.id);
+  });
+  if(t.tipped) await _simulate('Refunding tip...', 'Tip refunded!', () => {});
+  loadTransfers();
+};
+el.approveBtn.onclick = async () => {
+  const tok = S.token;
+  await _simulate('Approving...', 'Approved!', () => {
+    _approved.add(tok.toLowerCase());
+    hideModal(el.approveModal);
+    deposit();
+  });
+};
+
+const personaSelect = $('personaSelect');
+const personaDesc = $('personaDesc');
+const updateDesc = () => { personaDesc.textContent = PERSONAS[mockPersona].desc; };
+personaSelect.value = mockPersona;
+updateDesc();
+personaSelect.onchange = async () => {
+  hideAllModals();
+  if(S.view === 'send') resetForm();
+  mockPersona = personaSelect.value;
+  updateDesc();
+  await connect();
+  const p = PERSONAS[mockPersona];
+  if(p.out.length) S.tab = 'outbound';
+  else if(p.inb.length) S.tab = 'inbound';
+  else S.tab = 'outbound';
+  el.tabs.querySelectorAll('.tab').forEach(x => x.classList.toggle('on', x.dataset.tab === S.tab));
+  if(S.view !== 'take') setView('take');
+  loadTransfers();
+};
+
 render();
+connect().then(() => { setView('take'); loadTransfers(); });
 })();
-</script></body>
+</script>
+</body>
 </html>

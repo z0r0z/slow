@@ -1,9 +1,0 @@
-{
-  "name": "slow-frontend",
-  "version": "2.0.0",
-  "description": "Single-file vanilla-JS frontend for the SLOW protocol",
-  "private": true,
-  "scripts": {
-    "serve": "python3 -m http.server 5173"
-  }
-}

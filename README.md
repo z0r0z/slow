@@ -1,4 +1,4 @@
-# [SLOW](https://github.com/z0r0z/slow)  [![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL-black.svg)](https://opensource.org/license/agpl-v3/) [![solidity](https://img.shields.io/badge/solidity-%5E0.8.28-black)](https://docs.soliditylang.org/en/v0.8.28/) [![Foundry](https://img.shields.io/badge/Built%20with-Foundry-000000.svg)](https://getfoundry.sh/) ![tests](https://github.com/z0r0z/slow/actions/workflows/ci.yml/badge.svg)
+# [SLOW](https://github.com/z0r0z/slow)  [![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL-black.svg)](https://opensource.org/license/agpl-v3/) [![solidity](https://img.shields.io/badge/solidity-%5E0.8.34-black)](https://docs.soliditylang.org/en/v0.8.34/) [![Foundry](https://img.shields.io/badge/Built%20with-Foundry-000000.svg)](https://getfoundry.sh/)
 
 ## Deployment
 
@@ -26,8 +26,11 @@ Think of it as a security-enhanced way to transfer ETH and ERC20 tokens with bui
 - Set custom timelock periods for each transfer
 - Appoint a guardian to approve sensitive transfers
 - Reverse pending transfers before timelock expiry
+- One-step `claim` after expiry: burn the wrapped position and pay the underlying in a single tx
+- 30-day `clawback` window for senders when a recipient never claims (lost keys, dead address)
 - Visually track tokens with dynamic SVG renders
 - Multicall support for batched operations
+- Onchain dapp: the contract serves its own UI via `html()` — no IPFS, no gateway, no NPM
 
 ## How It Works
 
@@ -127,19 +130,25 @@ Emma accidentally sends tokens to the wrong address:
 - **`depositTo(token, to, amount, delay, data)`** - Deposit tokens and create a timelock
 - **`withdrawFrom(from, to, id, amount)`** - Withdraw unlocked tokens
 - **`safeTransferFrom(from, to, id, amount, data)`** - Transfer tokens with security checks
-- **`unlock(transferId)`** - Unlock tokens after timelock expiry
+- **`unlock(transferId)`** - Permissionless: move an expired pending transfer into the recipient's unlocked balance
+- **`claim(transferId)`** - Recipient (or operator): one-step burn-and-pay to underlying after expiry
+- **`reverse(transferId)`** - Sender (or operator): cancel a pending transfer before timelock expiry
+- **`clawback(transferId)`** - Sender (or operator): recover an unsettled transfer 30 days past expiry
 
 ### Guardian Management
 
-- **`setGuardian(guardian)`** - Designate an address as your guardian
+- **`setGuardian(guardian)`** - Designate an address as your guardian (self-applied 2FA)
 - **`approveTransfer(from, transferId)`** - Guardian approves a pending transfer
 
-### Utility Functions
+### View Helpers
 
-- **`predictTransferId(from, to, id, amount)`** - Calculate the ID for a pending transfer
-- **`reverse(transferId)`** - Cancel a pending transfer before timelock expiry
-- **`encodeId(token, delay)`** - Create a token ID from token address and timelock
-- **`decodeId(id)`** - Extract token address and timelock from token ID
+- **`predictTransferId(from, to, id, amount)`** - Compute the next transferId for a (from, to, id, amount) tuple
+- **`canReverseTransfer(transferId)`** - `(canReverse, reason)` preflight for the reverse window
+- **`isGuardianApprovalNeeded(user, to, id, amount)`** - Whether the user's next outflow requires guardian approval
+- **`canChangeGuardian(user)`** - `(canChange, cooldownEndsAt)` for the guardian rotation window
+- **`getOutboundTransfers(user)` / `getInboundTransfers(user)`** - All pending transferIds for a user
+- **`encodeId(token, delay)` / `decodeId(id)`** - Token-id <-> (address, delay) helpers
+- **`html()`** - Returns the dapp HTML reassembled from on-chain SSTORE2 chunks
 
 ## Technical Details
 
@@ -167,8 +176,10 @@ This ensures each transfer can be uniquely identified and tracked.
 
 - **Guardian Cooldown**: 1 day cooldown between guardian changes prevents flash attacks
 - **Reversible Transfers**: Only possible before timelock expiry
-- **Reentrancy Protection**: External-facing functions protected against reentrancy attacks
+- **Clawback Grace**: Sender can `clawback` only after timelock expiry + 30 days, and only while the pending entry still exists — anyone (recipient, operator, or any keeper) can call permissionless `unlock` during the grace window to disable clawback
+- **Reentrancy Protection**: External-facing functions protected against reentrancy attacks (transient-storage guard)
 - **Balance Tracking**: Strict accounting of locked vs. unlocked balances
+- **Unsupported Tokens**: Fee-on-transfer and rebasing tokens (e.g. stETH) are not supported — the wrapper assumes 1:1 accounting between deposited and withdrawable amount. Wrap rebasing tokens to their non-rebasing equivalent (e.g. wstETH) before depositing.
 
 ## Getting Started
 
@@ -176,20 +187,25 @@ Run: `curl -L https://foundry.paradigm.xyz | bash && source ~/.bashrc && foundry
 
 Build the foundry project with `forge build`. Run tests with `forge test`. Measure gas with `forge snapshot`. Format with `forge fmt`.
 
-## GitHub Actions
+The dapp has two parallel test layers, both vanilla `node` (no NPM):
 
-Contracts will be tested and gas measured on every push and pull request.
-You can edit the CI script in [.github/workflows/ci.yml](./.github/workflows/ci.yml).
+- **`node test/slow_html.test.mjs`** — unit tests for the deterministic helpers (keccak256, namehash, ABI codec, parse/formatUnits, id codec, every `SEL` selector). Reads `SLOW.html`, evaluates the inline IIFE in a sandboxed scope, asserts against canonical vectors crosschecked with `cast keccak` and `cast sig`.
+- **`node test/slow_html.e2e.test.mjs`** — full integration tests. Spawns `anvil`, deploys SLOW, drives the dapp's actual flow functions (`deposit`, `claim`, `reverseAndWithdraw`, `clawback`, `loadTransfers`) against the live contract, asserts on-chain state and dapp state match. Requires `anvil` on PATH and a current `forge build`.
+
+`SLOW.html` is not modified by either runner — both extract the IIFE in memory and rewrite only sandbox-local references.
 
 ## Blueprint
 
 ```txt
-lib
-├─ forge-std — https://github.com/foundry-rs/forge-std
-src
-├─ SLOW — Protocol Contract
-test
-└─ SLOW.t - Test Protocol Contract
+SLOW.html       — onchain dapp (served by the deployed contract via html())
+src/
+└─ SLOW.sol     — protocol contract
+test/
+└─ SLOW.t.sol   — full test suite (mainnet fork)
+lib/
+├─ solady       — https://github.com/vectorized/solady
+└─ forge-std    — https://github.com/foundry-rs/forge-std
+foundry.toml
 ```
 
 ## Disclaimer

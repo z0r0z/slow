@@ -1,26 +1,21 @@
 [profile.default]
-solc_version = "0.8.28"
-evm_version = "cancun"
+solc_version = "0.8.34"
+evm_version = "prague"
 
 optimizer = true
-optimizer_runs = 9_999_999
+optimizer_runs = 7000
 
 remappings = [
   "@solady=lib/solady/",
-  "@soledge=lib/soledge/",
   "@forge=lib/forge-std/src/"
 ]
 
 via_ir = true
 
-fs_permissions = [{ access = "read", path = "./frontend/index.html"}]
+fs_permissions = [{ access = "read", path = "./SLOW.html"}]
 
 [fmt]
 line_length = 100
 
 [rpc_endpoints]
 main = "https://ethereum-rpc.publicnode.com"
-base = "https://rpc.ankr.com/base"
-poly = "https://rpc.ankr.com/polygon"
-opti = "https://rpc.ankr.com/optimism"
-arbi = "https://rpc.ankr.com/arbitrum"

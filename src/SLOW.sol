@@ -11,12 +11,17 @@ import {EnumerableSetLib} from "@solady/src/utils/EnumerableSetLib.sol";
 import {MetadataReaderLib} from "@solady/src/utils/MetadataReaderLib.sol";
 import {ReentrancyGuardTransient} from "@solady/src/utils/ReentrancyGuardTransient.sol";
 
-/// @notice Timelocked token sends with optional guardian co-sign and tip-sponsored settlement.
+/// @notice Timelocked token sends with optional guardian co-sign and tipped settlement.
 /// @dev ERC1155 ids encode `(token, delay)`. Senders can `reverse` during the timelock
 /// or `clawback` after a 30-day post-expiry grace. Recipients settle via `unlock` +
 /// `withdrawFrom`, or `claim` for direct underlying payout. `depositToWithTip` posts
 /// a relayer tip on the gate so any keeper can settle without recipient approval.
 /// Guardian is a self-imposed co-sign mode on `safeTransferFrom` / `withdrawFrom`.
+/// `multicall` is inherited from Solady's `Multicallable`, which reverts on nonzero
+/// `msg.value` — payable deposits cannot be batched to drain the pool via msg.value reuse.
+/// ERC-1155 deviations: `safeBatchTransferFrom` is disabled and zero-amount transfers
+/// are rejected (anti-spam on the enumerable inbound/outbound sets). `supportsInterface`
+/// still reports ERC-1155 — treat this as ERC-1155-derived rather than fully compliant.
 contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     using EnumerableSetLib for EnumerableSetLib.Uint256Set;
     using MetadataReaderLib for address;
@@ -31,25 +36,27 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     event TransferApprovalRevoked(
         address indexed guardian, address indexed user, uint256 indexed transferId
     );
-    event TransferPending(uint256 indexed transferId, uint256 indexed delay);
-    event GuardianSet(address indexed user, address indexed guardian);
     event GuardianChangeProposed(
         address indexed user, address indexed newGuardian, uint256 effectiveAt
     );
-    event GuardianChangeCanceled(address indexed user);
+    event TransferPending(uint256 indexed transferId, uint256 indexed delay);
+    event GuardianSet(address indexed user, address indexed guardian);
     event TransferClawedBack(uint256 indexed transferId);
     event TransferReversed(uint256 indexed transferId);
+    event GuardianChangeCanceled(address indexed user);
     event TransferClaimed(uint256 indexed transferId);
 
     error GuardianApprovalRequired();
     error NoGuardianChangePending();
     error ClaimBlockedByGuardian();
     error GuardianChangeNotReady();
+    error GuardianChangeAlreadyCommittable();
     error BatchTransferDisabled();
     error TransferDoesNotExist();
     error TimelockNotExpired();
     error ClawbackNotReady();
     error InvalidRecipient();
+    error InvalidGuardian();
     error TimelockExpired();
     error InvalidDeposit();
     error InvalidAmount();
@@ -63,13 +70,10 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         uint256 amount;
     }
 
-    /// @dev Pending guardian rotation. While `effectiveAt != 0`, a change is in flight.
-    /// Either the user or the current guardian can call `cancelGuardianChange` before
-    /// `effectiveAt` to veto. After `effectiveAt`, anyone can call `commitGuardian` to
-    /// apply the change. Packs into a single slot.
+    /// @dev Pending guardian rotation; packs into a single slot. `effectiveAt != 0` means in flight.
     struct PendingGuardian {
-        address guardian; // 20 bytes
-        uint96 effectiveAt; // 12 bytes
+        address guardian;
+        uint96 effectiveAt;
     }
 
     uint256 internal constant _GUARDIAN_CHANGE_DELAY = 1 days; // Veto window for guardian rotation.
@@ -93,11 +97,11 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
     mapping(address user => uint256 timestamp) public lastGuardianChange;
 
+    mapping(address user => PendingGuardian) public pendingGuardian;
+
     mapping(uint256 transferId => bool) public guardianApproved;
 
     mapping(address user => address) public guardians;
-
-    mapping(address user => PendingGuardian) public pendingGuardian;
 
     mapping(address user => uint256) public nonces;
 
@@ -137,9 +141,11 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
     // VIEWERS
 
-    /// @notice Hash matching the next `safeTransferFrom` (or `depositTo`) by `from`
-    /// at the current `nonces[from]` / `lastGuardianChange[from]`. Use this for
-    /// guardian co-sign of wrapper transfers; use `predictWithdrawalId` for raw exits.
+    /// @notice Hash matching the next `safeTransferFrom` by `from` at the current
+    /// `nonces[from]` / `lastGuardianChange[from]`. Use this for guardian co-sign of
+    /// wrapper transfers; use `predictWithdrawalId` for raw exits. Delayed `depositTo`
+    /// also produces a pending transfer id under this preimage, but deposits are not
+    /// guardian-gated — the hash is exposed only as a handle for indexers.
     function predictTransferId(address from, address to, uint256 id, uint256 amount)
         public
         view
@@ -247,17 +253,10 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
             ];
     }
 
-    /// @notice Returns whether `setGuardian` would take effect immediately for `user`.
-    /// True when the user has no active guardian (first-time set or post-removal):
-    /// the change applies in one tx. False when a guardian is set: the change must
-    /// be proposed (`setGuardian`), wait `_GUARDIAN_CHANGE_DELAY`, then committed
-    /// (`commitGuardian`); the current guardian or the user can `cancelGuardianChange`
-    /// during the window.
-    function isGuardianChangeImmediate(address user) public view returns (bool) {
-        return guardians[user] == address(0);
-    }
-
     // PENDING TRANSFER ENUMERATION
+    // EnumerableSetLib swaps with the last element on remove, so positional reads
+    // (`outboundTransferAt` / `inboundTransferAt`) are not stable across settlement.
+    // Indexers should snapshot via `getOutboundTransfers` / `getInboundTransfers`.
 
     function getOutboundTransfers(address user) public view returns (uint256[] memory) {
         return _outboundTransfers[user].values();
@@ -285,26 +284,33 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
     // GUARDIAN AUTH
 
-    /// @notice Co-sign mode for `safeTransferFrom` / `withdrawFrom`. While
+    /// @notice Co-sign mode for `safeTransferFrom` / `withdrawFrom`: while
     /// `guardians[user] != 0`, every outflow needs `approveTransfer` from that address.
-    /// @dev If the user has no active guardian, the change is immediate (first-time set
-    /// or post-removal). If the user already has an active guardian, the new guardian is
-    /// staged in `pendingGuardian` with a `_GUARDIAN_CHANGE_DELAY` veto window: either the
-    /// user OR the current guardian can `cancelGuardianChange` before `effectiveAt` to
-    /// block the rotation; after the delay, anyone can `commitGuardian` to apply it.
-    /// This is what protects already-wrapped balances against key compromise — a stolen
-    /// key cannot remove or replace a live guardian without a 24h veto window.
-    /// `setApprovalForAll` is the orthogonal "extend authority outward" primitive.
+    /// @dev First-time set (or post-removal) is immediate. Rotating an active guardian
+    /// stages `pendingGuardian` with a `_GUARDIAN_CHANGE_DELAY` veto window — user or
+    /// current guardian can `cancelGuardianChange` before `effectiveAt`, anyone can
+    /// `commitGuardian` after. This protects already-wrapped balances against key
+    /// compromise: a stolen key cannot remove a live guardian without the veto window.
     function setGuardian(address newGuardian) public {
+        // Self-guardian provides no protection: a stolen key can also `approveTransfer`.
+        require(newGuardian != msg.sender, InvalidGuardian());
+        if (newGuardian == guardians[msg.sender]) {
+            // Re-proposing the current guardian cancels any in-flight rotation.
+            // Bounded by the cancel window so post-delay only `commitGuardian` is valid.
+            uint256 effectiveAt = pendingGuardian[msg.sender].effectiveAt;
+            if (effectiveAt != 0 && block.timestamp < effectiveAt) {
+                delete pendingGuardian[msg.sender];
+                emit GuardianChangeCanceled(msg.sender);
+            }
+            return;
+        }
         if (guardians[msg.sender] == address(0)) {
-            // No active guardian — immediate. Clear any stale pending entry first
-            // so a leftover proposal can't get committed against the new state.
+            // First-time / post-removal: immediate. Defensive pending-clear (invariant: empty here).
             delete pendingGuardian[msg.sender];
             lastGuardianChange[msg.sender] = block.timestamp;
             emit GuardianSet(msg.sender, guardians[msg.sender] = newGuardian);
         } else {
-            // Active guardian — propose; current guardian or user can veto in the window.
-            // Re-proposing overwrites any prior pending entry and resets the timer.
+            // Active guardian — stage rotation. Each new proposal restarts the veto window.
             unchecked {
                 uint256 effectiveAt = block.timestamp + _GUARDIAN_CHANGE_DELAY;
                 pendingGuardian[msg.sender] = PendingGuardian(newGuardian, uint96(effectiveAt));
@@ -313,10 +319,9 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         }
     }
 
-    /// @notice Apply a previously proposed guardian change after the delay has elapsed.
-    /// Permissionless: anyone can poke the commit (gas griefing only — the user already
-    /// proposed the change). `lastGuardianChange` updates here, atomically invalidating
-    /// every dangling guardian approval bound to the previous preimage.
+    /// @notice Apply a proposed guardian change after the delay. Permissionless poke.
+    /// `lastGuardianChange` updates here, invalidating any dangling approvals bound
+    /// to the previous preimage.
     function commitGuardian(address user) public {
         PendingGuardian memory p = pendingGuardian[user];
         require(p.effectiveAt != 0, NoGuardianChangePending());
@@ -327,29 +332,26 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     }
 
     /// @notice Veto a pending guardian change during the delay window. Callable by
-    /// `user` (so the legitimate owner can back out) or by `guardians[user]` (so a
-    /// live guardian can block a compromised-key rotation attempt). After the delay
-    /// expires this reverts — at that point only `commitGuardian` is valid, so a
-    /// hostile guardian cannot race the user's commit by repeatedly canceling.
+    /// `user` or `guardians[user]`. After the delay only `commitGuardian` is valid.
+    /// @dev Guardian-side cancel is the protection: it lets a legitimate guardian
+    /// defeat a stolen key proposing `setGuardian(attacker)`. The trade-off is that
+    /// a hostile guardian can veto every rotation proposal indefinitely. Appoint a
+    /// guardian only if you trust them — that is what co-sign means.
     function cancelGuardianChange(address user) public {
         uint256 effectiveAt = pendingGuardian[user].effectiveAt;
         require(effectiveAt != 0, NoGuardianChangePending());
-        require(block.timestamp < effectiveAt, GuardianChangeNotReady());
+        require(block.timestamp < effectiveAt, GuardianChangeAlreadyCommittable());
         require(msg.sender == user || msg.sender == guardians[user], Unauthorized());
         delete pendingGuardian[user];
         emit GuardianChangeCanceled(user);
     }
 
     /// @notice Approve a precomputed transferId for `from`. Callable only by `guardians[from]`.
-    /// @dev `safeTransferFrom` and `withdrawFrom` use distinct preimages — the op-type byte
-    /// (`_OP_TRANSFER` vs `_OP_WITHDRAW`) is mixed into the hash — so a transfer approval
-    /// will not satisfy a withdrawal at the same `(from, to, id, amount)` and vice versa.
-    /// Use `predictTransferId` for the wrapper-transfer hash and `predictWithdrawalId` for
-    /// the raw-exit hash. Committing a guardian change (`commitGuardian`) bumps
-    /// `lastGuardianChange[from]` and atomically invalidates every dangling approval bound
-    /// to the prior preimage. Guardians enforcing op-specific policy must still verify
-    /// intent off-chain before approving — the on-chain split prevents cross-op consumption,
-    /// not malicious approval of the wrong op.
+    /// @dev Use `predictTransferId` for transfer approvals and `predictWithdrawalId` for
+    /// withdrawal approvals — the preimages differ, so approving one will not satisfy the
+    /// other. `commitGuardian` bumps `lastGuardianChange` and invalidates every dangling
+    /// approval. The on-chain op-split prevents cross-op consumption, not malicious
+    /// approval of the wrong op — guardians must still verify intent off-chain.
     function approveTransfer(address from, uint256 transferId) public {
         require(msg.sender == guardians[from], Unauthorized());
         guardianApproved[transferId] = true;
@@ -357,11 +359,11 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     }
 
     /// @notice Retract a previously granted approval. Callable only by `guardians[from]`.
-    /// @dev Lets a guardian undo a single mistaken approval without rotating the whole
-    /// guardian (which atomically invalidates ALL approvals via `lastGuardianChange`).
-    /// Idempotent: revoking a nonexistent or already-consumed approval is a no-op.
+    /// @dev Undo a single mistaken approval without rotating the guardian (which would
+    /// invalidate ALL approvals). Idempotent — revoking a clear slot is a no-op.
     function revokeApproval(address from, uint256 transferId) public {
         require(msg.sender == guardians[from], Unauthorized());
+        if (!guardianApproved[transferId]) return;
         delete guardianApproved[transferId];
         emit TransferApprovalRevoked(msg.sender, from, transferId);
     }
@@ -391,16 +393,13 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
     /// @notice Auto-settle path. After expiry, burns the wrapper from `pt.to` and pays
     /// the raw underlying directly to `pt.to`. Skips the unlocked-balance step.
-    /// @dev Callable by `pt.to` or any operator approved via `setApprovalForAll`. Default
-    /// is recipient-only; opt into auto-claim by approving a keeper. No third party can
-    /// force-unwrap a holder's wrapped position. Reverts when `pt.to` has a guardian
-    /// set — guardian-mode recipients settle via `unlock` + `withdrawFrom`, where the
-    /// raw exit is guardian-gated.
+    /// @dev Callable by `pt.to` or any operator approved via `setApprovalForAll`.
+    /// Reverts when `pt.to` has a guardian set — guardian-mode recipients settle via
+    /// `unlock` + `withdrawFrom`, where the raw exit is guardian-gated.
     function claim(uint256 transferId) public nonReentrant {
-        PendingTransfer storage pt = pendingTransfers[transferId];
+        PendingTransfer memory pt = pendingTransfers[transferId];
         require(pt.timestamp != 0, TransferDoesNotExist());
-        address to = pt.to;
-        require(msg.sender == to || isApprovedForAll(to, msg.sender), Unauthorized());
+        require(msg.sender == pt.to || isApprovedForAll(pt.to, msg.sender), Unauthorized());
         _doClaim(transferId, pt);
     }
 
@@ -409,28 +408,24 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     /// a relayer tip posted via `depositToWithTip`. Guardian veto still applies.
     function claimTipped(uint256 transferId) public nonReentrant {
         require(msg.sender == gate, Unauthorized());
-        PendingTransfer storage pt = pendingTransfers[transferId];
+        PendingTransfer memory pt = pendingTransfers[transferId];
         require(pt.timestamp != 0, TransferDoesNotExist());
         _doClaim(transferId, pt);
     }
 
-    function _doClaim(uint256 transferId, PendingTransfer storage pt) internal {
+    function _doClaim(uint256 transferId, PendingTransfer memory pt) internal {
         unchecked {
-            uint256 id = pt.id;
-            require(block.timestamp >= pt.timestamp + (id >> 160), TimelockNotExpired());
-            address to = pt.to;
-            require(guardians[to] == address(0), ClaimBlockedByGuardian());
-            address from = pt.from;
-            uint256 amount = pt.amount;
+            require(block.timestamp >= pt.timestamp + (pt.id >> 160), TimelockNotExpired());
+            require(guardians[pt.to] == address(0), ClaimBlockedByGuardian());
 
-            _burn(address(0), to, id, amount);
-            _outboundTransfers[from].remove(transferId);
-            _inboundTransfers[to].remove(transferId);
+            _burn(address(0), pt.to, pt.id, pt.amount);
+            _outboundTransfers[pt.from].remove(transferId);
+            _inboundTransfers[pt.to].remove(transferId);
             delete pendingTransfers[transferId];
 
-            address token = address(uint160(id));
-            if (token == address(0)) to.safeTransferETH(amount);
-            else token.safeTransfer(to, amount);
+            address token = address(uint160(pt.id));
+            if (token == address(0)) pt.to.safeTransferETH(pt.amount);
+            else token.safeTransfer(pt.to, pt.amount);
 
             emit TransferClaimed(transferId);
         }
@@ -451,6 +446,7 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         nonReentrant
         returns (uint256 transferId)
     {
+        require(to != address(0), InvalidRecipient());
         require(to != address(this), InvalidDeposit());
 
         if (msg.value != 0) {
@@ -468,6 +464,9 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     /// otherwise refundable to the depositor via `gate.refundTip`.
     /// @dev `msg.value == amount + tip` for ETH or `tip` for ERC20. `delay != 0`,
     /// `tip != 0`, and `tip <= type(uint96).max` (the gate stores tips packed in a uint96).
+    /// If `to` sets a guardian post-deposit, tipped settlement is blocked; the tip is
+    /// recoverable via `gate.refundTip` once `clawback` (after the 30-day grace) clears
+    /// the pending entry.
     function depositToWithTip(
         address token,
         address to,
@@ -476,6 +475,7 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         uint256 tip,
         bytes calldata data
     ) public payable nonReentrant returns (uint256 transferId) {
+        require(to != address(0), InvalidRecipient());
         require(to != address(this), InvalidDeposit());
         require(amount != 0, InvalidAmount());
         require(delay != 0, InvalidDeposit());
@@ -527,6 +527,7 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
                 emit TransferPending(transferId, delay);
 
+                // `tip != 0` implies `delay != 0` (enforced by `depositToWithTip`).
                 if (tip != 0) SLOWGate(gate).recordTip{value: tip}(transferId, msg.sender, to);
             } else {
                 unlockedBalances[to][id] += amount;
@@ -536,32 +537,34 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
     // WITHDRAW
 
+    /// @dev Caller authorization (msg.sender == from or operator-approved) is enforced by
+    /// Solady's `_burn(by, from, ...)`, which reverts `NotOwnerNorApproved` on mismatch.
+    /// Pre-burn state changes here roll back on that revert.
     function withdrawFrom(address from, address to, uint256 id, uint256 amount)
         public
         nonReentrant
     {
-        require(to != address(0), InvalidRecipient());
+        require(to != address(0) && to != address(this) && to != gate, InvalidRecipient());
         require(amount != 0, InvalidAmount());
         unlockedBalances[from][id] -= amount;
 
         unchecked {
             if (guardians[from] != address(0)) {
-                require(
-                    guardianApproved[uint256(
-                            keccak256(
-                                abi.encodePacked(
-                                    from,
-                                    to,
-                                    id,
-                                    amount,
-                                    nonces[from]++,
-                                    lastGuardianChange[from],
-                                    _OP_WITHDRAW
-                                )
-                            )
-                        )],
-                    GuardianApprovalRequired()
+                uint256 transferId = uint256(
+                    keccak256(
+                        abi.encodePacked(
+                            from,
+                            to,
+                            id,
+                            amount,
+                            nonces[from]++,
+                            lastGuardianChange[from],
+                            _OP_WITHDRAW
+                        )
+                    )
                 );
+                require(guardianApproved[transferId], GuardianApprovalRequired());
+                delete guardianApproved[transferId];
             }
 
             _burn(msg.sender, from, id, amount);
@@ -578,6 +581,9 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
     // TRANSFER
 
+    /// @dev Caller authorization is enforced by `super.safeTransferFrom` (Solady), which
+    /// reverts `NotOwnerNorApproved` unless msg.sender == from or operator-approved.
+    /// Pre-call state changes roll back on that revert.
     function safeTransferFrom(
         address from,
         address to,
@@ -585,6 +591,7 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         uint256 amount,
         bytes calldata data
     ) public override(ERC1155) nonReentrant {
+        require(to != address(0) && to != address(this), InvalidRecipient());
         require(amount != 0, InvalidAmount());
         unlockedBalances[from][id] -= amount;
 
@@ -610,6 +617,7 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
                 if (guardian != address(0)) {
                     require(guardianApproved[transferId], GuardianApprovalRequired());
+                    delete guardianApproved[transferId];
                 }
 
                 if (delay != 0) {
@@ -664,13 +672,11 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     /// @notice Sender recovery for unsettled transfers (e.g. dead/lost recipient). Returns
     /// the wrapper to `pt.from` and credits their `unlockedBalances`. Callable by `pt.from`
     /// or any operator approved via `setApprovalForAll`.
-    /// @dev Available 30 days past timelock expiry. Mirrors `reverse` (wrapper-route, not
-    /// raw payout) so any subsequent raw exit goes through `withdrawFrom` and inherits
-    /// guardian gating when `guardians[pt.from]` is set. For one-shot raw recovery, batch
-    /// with `withdrawFrom` via `multicall`. Move uses `_safeTransfer`; contract `pt.from`
-    /// must implement `IERC1155Receiver`. EOAs unaffected. Only catches transfers whose
-    /// pending entry still exists; once `unlock` or `claim` runs, settlement to `pt.to`
-    /// is final.
+    /// @dev Available 30 days past timelock expiry. Wrapper-route like `reverse`, so any
+    /// subsequent raw exit goes through `withdrawFrom` and inherits guardian gating.
+    /// `_safeTransfer` invokes `onERC1155Received` on `pt.from`; contract senders must
+    /// implement `IERC1155Receiver`. Only catches transfers still pending — once `unlock`
+    /// or `claim` runs, settlement to `pt.to` is final.
     function clawback(uint256 transferId) public nonReentrant {
         unchecked {
             PendingTransfer storage pt = pendingTransfers[transferId];
@@ -831,7 +837,6 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         string memory dispName = LibString.escapeHTML(_clipForDisplay(tokenName, 28));
 
         // Address row is suppressed for ETH (zero address would render as 0x000…000).
-        // Shared font-family / text-anchor / fill come from the <g> wrapper below.
         string memory addressRow = token == address(0)
             ? ""
             : string(
@@ -841,7 +846,8 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
                     "</text>"
                 )
             );
-        // Exact-seconds subtitle, only when the main label is coarser than seconds.
+        // Exact-seconds subtitle for delays over one minute, where the main
+        // label loses second-level resolution.
         string memory secondsRow = delay > 60
             ? string(
                 abi.encodePacked(

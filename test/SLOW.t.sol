@@ -461,11 +461,11 @@ contract SLOWTest is Test {
         vm.warp(block.timestamp + 1 days);
 
         vm.prank(guardian);
-        vm.expectRevert(SLOW.GuardianChangeNotReady.selector);
+        vm.expectRevert(SLOW.GuardianChangeAlreadyCommittable.selector);
         slow.cancelGuardianChange(user1);
 
         vm.prank(user1);
-        vm.expectRevert(SLOW.GuardianChangeNotReady.selector);
+        vm.expectRevert(SLOW.GuardianChangeAlreadyCommittable.selector);
         slow.cancelGuardianChange(user1);
 
         // Commit still works, as expected.
@@ -1111,6 +1111,80 @@ contract SLOWTest is Test {
         assertEq(ts, 0);
     }
 
+    // A malicious recipient that reverts in onERC1155Received must roll back the entire
+    // deposit — no wrapper minted, no pending entry, no contract balance retained.
+    function testDepositToRevertingReceiverUnwinds() public {
+        RevertingReceiver bad = new RevertingReceiver(slow);
+        uint256 contractBalBefore = address(slow).balance;
+        uint256 nonceBefore = slow.nonces(user1);
+
+        vm.deal(user1, AMOUNT);
+        vm.prank(user1);
+        vm.expectRevert();
+        slow.depositTo{value: AMOUNT}(address(0), address(bad), 0, DELAY, "");
+
+        uint256 id = calculateId(address(0), DELAY);
+        assertEq(slow.balanceOf(address(bad), id), 0, "no wrapper minted");
+        assertEq(address(slow).balance, contractBalBefore, "no ETH retained");
+        assertEq(slow.nonces(user1), nonceBefore, "nonce not bumped");
+        assertEq(slow.outboundTransferCount(user1), 0, "no outbound entry");
+        assertEq(slow.inboundTransferCount(address(bad)), 0, "no inbound entry");
+    }
+
+    // safeTransferFrom into a reverting receiver must unwind unlockedBalances, the new
+    // pending entry, and the nonce bump — every state mutation in the function rolls back.
+    function testSafeTransferFromToRevertingReceiverUnwinds() public {
+        // Seed user1 with unlocked wrapper at id (delay=DELAY) via deposit-then-unlock.
+        vm.deal(user1, AMOUNT);
+        vm.prank(user1);
+        uint256 seedId = slow.depositTo{value: AMOUNT}(address(0), user1, 0, DELAY, "");
+        vm.warp(block.timestamp + DELAY);
+        vm.prank(user1);
+        slow.unlock(seedId);
+
+        uint256 id = calculateId(address(0), DELAY);
+        uint256 unlockedBefore = slow.unlockedBalances(user1, id);
+        uint256 balBefore = slow.balanceOf(user1, id);
+        uint256 nonceBefore = slow.nonces(user1);
+
+        RevertingReceiver bad = new RevertingReceiver(slow);
+
+        vm.prank(user1);
+        vm.expectRevert();
+        slow.safeTransferFrom(user1, address(bad), id, AMOUNT, "");
+
+        assertEq(slow.unlockedBalances(user1, id), unlockedBefore, "unlocked unchanged");
+        assertEq(slow.balanceOf(user1, id), balBefore, "wrapper unchanged");
+        assertEq(slow.balanceOf(address(bad), id), 0, "no wrapper at receiver");
+        assertEq(slow.nonces(user1), nonceBefore, "nonce not bumped");
+        assertEq(slow.outboundTransferCount(user1), 0);
+        assertEq(slow.inboundTransferCount(address(bad)), 0);
+    }
+
+    // A contract sender whose onERC1155Received reverts cannot complete clawback —
+    // _safeTransfer back to pt.from triggers the revert and rolls the call back.
+    // The pending entry stays intact and is recoverable when the sender fixes itself.
+    function testClawbackToRevertingSenderUnwinds() public {
+        RevertingReceiver bad = new RevertingReceiver{value: AMOUNT}(slow);
+        uint256 transferId = bad.deposit(user2, DELAY);
+
+        // Past expiry + grace.
+        vm.warp(block.timestamp + DELAY + 30 days + 1);
+
+        vm.expectRevert();
+        bad.callClawback(transferId);
+
+        // Pending entry intact.
+        (uint96 ts, address from,,, uint256 amount) = slow.pendingTransfers(transferId);
+        assertTrue(ts != 0, "pending preserved");
+        assertEq(from, address(bad));
+        assertEq(amount, AMOUNT);
+        // Wrapper still at the recipient, sender's unlocked balance untouched.
+        uint256 id = calculateId(address(0), DELAY);
+        assertEq(slow.balanceOf(user2, id), AMOUNT);
+        assertEq(slow.unlockedBalances(address(bad), id), 0);
+    }
+
     // METADATA
 
     function testNameAndSymbol() public view {
@@ -1165,6 +1239,17 @@ contract SLOWTest is Test {
         assertEq(slow.inboundTransferCount(user2), inboundBefore);
     }
 
+    function testTransferToContractItselfReverts() public {
+        vm.prank(user1);
+        slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, "");
+
+        uint256 id = calculateId(address(0), 0);
+
+        vm.prank(user1);
+        vm.expectRevert(SLOW.InvalidRecipient.selector);
+        slow.safeTransferFrom(user1, address(slow), id, AMOUNT, "");
+    }
+
     function testWithdrawToZeroAddressReverts() public {
         // Deposit with zero delay so user1 holds an unlocked balance.
         vm.prank(user1);
@@ -1175,6 +1260,29 @@ contract SLOWTest is Test {
         vm.prank(user1);
         vm.expectRevert(SLOW.InvalidRecipient.selector);
         slow.withdrawFrom(user1, address(0), id, AMOUNT);
+    }
+
+    function testWithdrawToContractItselfReverts() public {
+        vm.prank(user1);
+        slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, "");
+
+        uint256 id = calculateId(address(0), 0);
+
+        vm.prank(user1);
+        vm.expectRevert(SLOW.InvalidRecipient.selector);
+        slow.withdrawFrom(user1, address(slow), id, AMOUNT);
+    }
+
+    function testWithdrawToGateReverts() public {
+        vm.prank(user1);
+        slow.depositTo{value: AMOUNT}(address(0), user1, 0, 0, "");
+
+        uint256 id = calculateId(address(0), 0);
+        address gate = slow.gate();
+
+        vm.prank(user1);
+        vm.expectRevert(SLOW.InvalidRecipient.selector);
+        slow.withdrawFrom(user1, gate, id, AMOUNT);
     }
 
     // TIMELOCK BOUNDARY (>= unlock, < reverse)
@@ -1587,7 +1695,7 @@ contract SLOWTest is Test {
 
     function testGuardianViews() public {
         // Fresh user has no active guardian → next set is immediate.
-        assertTrue(slow.isGuardianChangeImmediate(user1));
+        assertEq(slow.guardians(user1), address(0));
 
         // No guardian set → approval never needed.
         assertFalse(slow.isGuardianApprovalNeeded(user1, user2, 0, AMOUNT));
@@ -1600,7 +1708,7 @@ contract SLOWTest is Test {
         assertTrue(slow.isGuardianApprovalNeeded(user1, user2, id, AMOUNT));
 
         // With an active guardian, further changes are no longer immediate.
-        assertFalse(slow.isGuardianChangeImmediate(user1));
+        assertEq(slow.guardians(user1), guardian);
 
         // Once guardian approves the predicted transferId, the view flips.
         uint256 expected = slow.predictTransferId(user1, user2, id, AMOUNT);
@@ -1680,6 +1788,24 @@ contract SLOWTest is Test {
         vm.prank(user1);
         vm.expectRevert();
         slow.multicall{value: 1 ether}(calls);
+    }
+
+    /// Regression: msg.value reuse across delegatecalled sub-deposits. Solady's Multicallable
+    /// guards against this by rejecting nonzero msg.value at entry; this test pins that
+    /// behavior to the specific attack shape (N copies of payable depositTo).
+    function testMulticallDepositValueReuseBlocked() public {
+        bytes[] memory calls = new bytes[](5);
+        for (uint256 i; i < 5; ++i) {
+            calls[i] = abi.encodeCall(SLOW.depositTo, (address(0), user1, 0, uint96(1 days), ""));
+        }
+        vm.deal(user1, 1 ether);
+        vm.prank(user1);
+        vm.expectRevert();
+        slow.multicall{value: 1 ether}(calls);
+
+        // Pool balance unchanged, no wrappers minted.
+        uint256 id = calculateId(address(0), 1 days);
+        assertEq(slow.balanceOf(user1, id), 0, "no wrapper minted");
     }
 
     // CONSTRUCTOR REGISTRATION
@@ -2127,6 +2253,131 @@ contract SLOWTest is Test {
 
         // unlock is permissionless and does not move msg.sender's nonce
         // (we'd need to warp + unlock to test this; keeping the assertion simple here).
+    }
+
+    /// Invariant: outbound and inbound enumerable sets are exact mirrors of `pendingTransfers`.
+    /// For every (user, transferId) in `_outboundTransfers[user]`: pending exists, `pt.from == user`,
+    /// and the same transferId appears in `_inboundTransfers[pt.to]`. Symmetric for inbound.
+    /// Settlement (unlock/claim/reverse/clawback) must remove from BOTH sides atomically.
+    function testFuzz_SetMembershipMirrorsPending(uint96 a1, uint96 a2, uint96 a3, uint96 delay)
+        public
+    {
+        a1 = uint96(bound(a1, 1, 50 ether));
+        a2 = uint96(bound(a2, 1, 50 ether));
+        a3 = uint96(bound(a3, 1, 50 ether));
+        delay = uint96(bound(delay, 1, 365 days));
+
+        address user3 = address(0x3);
+        uint256 id = calculateId(address(0), delay);
+
+        // Deposit user1 → user2.
+        vm.deal(user1, uint256(a1) + uint256(a2));
+        vm.prank(user1);
+        uint256 t1 = slow.depositTo{value: a1}(address(0), user2, 0, delay, "");
+        _assertSetIntegrity(user1);
+        _assertSetIntegrity(user2);
+        _assertPairLinked(t1);
+
+        // Deposit user1 → user3 (different recipient, same sender — outbound[user1] grows).
+        vm.prank(user1);
+        uint256 t2 = slow.depositTo{value: a2}(address(0), user3, 0, delay, "");
+        _assertSetIntegrity(user1);
+        _assertSetIntegrity(user3);
+        _assertPairLinked(t2);
+
+        // Reverse-direction deposit user2 → user1.
+        vm.deal(user2, a3);
+        vm.prank(user2);
+        uint256 t3 = slow.depositTo{value: a3}(address(0), user1, 0, delay, "");
+        _assertSetIntegrity(user1);
+        _assertSetIntegrity(user2);
+        _assertPairLinked(t3);
+
+        // Expire and unlock t1 — must drop from outbound[user1] AND inbound[user2].
+        vm.warp(block.timestamp + delay);
+        vm.prank(user2);
+        slow.unlock(t1);
+        _assertSetIntegrity(user1);
+        _assertSetIntegrity(user2);
+        assertFalse(_outboundContains(user1, t1), "unlock leaves outbound");
+        assertFalse(_inboundContains(user2, t1), "unlock leaves inbound");
+
+        // Claim t2 (user3 has no guardian) — same removal contract.
+        vm.prank(user3);
+        slow.claim(t2);
+        _assertSetIntegrity(user1);
+        _assertSetIntegrity(user3);
+        assertFalse(_outboundContains(user1, t2), "claim leaves outbound");
+        assertFalse(_inboundContains(user3, t2), "claim leaves inbound");
+
+        // Re-transfer the unlocked balance from user2 to user3 (creates a fresh pending).
+        uint256 t4 = slow.predictTransferId(user2, user3, id, a1);
+        vm.prank(user2);
+        slow.safeTransferFrom(user2, user3, id, a1, "");
+        _assertSetIntegrity(user2);
+        _assertSetIntegrity(user3);
+        _assertPairLinked(t4);
+
+        // Reverse the re-transfer (within timelock).
+        vm.prank(user2);
+        slow.reverse(t4);
+        _assertSetIntegrity(user2);
+        _assertSetIntegrity(user3);
+        assertFalse(_outboundContains(user2, t4), "reverse leaves outbound");
+        assertFalse(_inboundContains(user3, t4), "reverse leaves inbound");
+
+        // Clawback t3 after the 30-day grace.
+        vm.warp(block.timestamp + 30 days + 1);
+        vm.prank(user2);
+        slow.clawback(t3);
+        _assertSetIntegrity(user1);
+        _assertSetIntegrity(user2);
+        assertFalse(_outboundContains(user2, t3), "clawback leaves outbound");
+        assertFalse(_inboundContains(user1, t3), "clawback leaves inbound");
+    }
+
+    function _assertSetIntegrity(address user) internal view {
+        uint256[] memory outbound = slow.getOutboundTransfers(user);
+        for (uint256 i; i < outbound.length; ++i) {
+            uint256 transferId = outbound[i];
+            (uint96 ts, address from, address to,,) = slow.pendingTransfers(transferId);
+            assertTrue(ts != 0, "outbound entry references stale pending");
+            assertEq(from, user, "outbound entry from-mismatch");
+            assertTrue(_inboundContains(to, transferId), "outbound entry has no inbound mirror");
+        }
+        uint256[] memory inbound = slow.getInboundTransfers(user);
+        for (uint256 i; i < inbound.length; ++i) {
+            uint256 transferId = inbound[i];
+            (uint96 ts, address from, address to,,) = slow.pendingTransfers(transferId);
+            assertTrue(ts != 0, "inbound entry references stale pending");
+            assertEq(to, user, "inbound entry to-mismatch");
+            assertTrue(_outboundContains(from, transferId), "inbound entry has no outbound mirror");
+        }
+    }
+
+    function _assertPairLinked(uint256 transferId) internal view {
+        (uint96 ts, address from, address to,,) = slow.pendingTransfers(transferId);
+        assertTrue(ts != 0, "pending must exist for linkage check");
+        assertTrue(
+            _outboundContains(from, transferId), "active pending missing from outbound[from]"
+        );
+        assertTrue(_inboundContains(to, transferId), "active pending missing from inbound[to]");
+    }
+
+    function _outboundContains(address user, uint256 transferId) internal view returns (bool) {
+        uint256[] memory s = slow.getOutboundTransfers(user);
+        for (uint256 i; i < s.length; ++i) {
+            if (s[i] == transferId) return true;
+        }
+        return false;
+    }
+
+    function _inboundContains(address user, uint256 transferId) internal view returns (bool) {
+        uint256[] memory s = slow.getInboundTransfers(user);
+        for (uint256 i; i < s.length; ++i) {
+            if (s[i] == transferId) return true;
+        }
+        return false;
     }
 
     // GATE — auto-claim forwarder
@@ -3102,6 +3353,42 @@ contract ReentrantReceiver {
         bytes calldata
     ) external pure returns (bytes4) {
         return this.onERC1155BatchReceived.selector;
+    }
+}
+
+// Always reverts in onERC1155Received. Used to confirm SLOW unwinds cleanly when the
+// recipient (or callback target on reverse/clawback) refuses the transfer.
+contract RevertingReceiver {
+    SLOW slow;
+
+    constructor(SLOW _slow) payable {
+        slow = _slow;
+    }
+
+    function deposit(address to, uint96 delay) external returns (uint256) {
+        return slow.depositTo{value: address(this).balance}(address(0), to, 0, delay, "");
+    }
+
+    function callClawback(uint256 transferId) external {
+        slow.clawback(transferId);
+    }
+
+    function onERC1155Received(address, address, uint256, uint256, bytes calldata)
+        external
+        pure
+        returns (bytes4)
+    {
+        revert("RevertingReceiver: nope");
+    }
+
+    function onERC1155BatchReceived(
+        address,
+        address,
+        uint256[] calldata,
+        uint256[] calldata,
+        bytes calldata
+    ) external pure returns (bytes4) {
+        revert("RevertingReceiver: nope");
     }
 }
 
