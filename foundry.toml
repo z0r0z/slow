@@ -3,7 +3,7 @@ solc_version = "0.8.34"
 evm_version = "prague"
 
 optimizer = true
-optimizer_runs = 7000
+optimizer_runs = 200
 
 remappings = [
   "@solady=lib/solady/",
@@ -12,7 +12,7 @@ remappings = [
 
 via_ir = true
 
-fs_permissions = [{ access = "read", path = "./SLOW.html"}]
+fs_permissions = [{ access = "read", path = "./SLOW.html"}, { access = "read", path = "./deploy_artifacts"}]
 
 [fmt]
 line_length = 100

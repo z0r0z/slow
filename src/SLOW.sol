@@ -20,7 +20,7 @@ import {ReentrancyGuardTransient} from "@solady/src/utils/ReentrancyGuardTransie
 /// `multicall` is inherited from Solady's `Multicallable`, which reverts on nonzero
 /// `msg.value` — payable deposits cannot be batched to drain the pool via msg.value reuse.
 /// ERC-1155 deviations: `safeBatchTransferFrom` is disabled and zero-amount transfers
-/// are rejected (anti-spam on the enumerable inbound/outbound sets). `supportsInterface`
+/// are rejected (avoids spamming the inbound/outbound sets via 0-amount delayed sends). `supportsInterface`
 /// still reports ERC-1155 — treat this as ERC-1155-derived rather than fully compliant.
 contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     using EnumerableSetLib for EnumerableSetLib.Uint256Set;
@@ -85,7 +85,7 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     uint8 internal constant _OP_TRANSFER = 0;
     uint8 internal constant _OP_WITHDRAW = 1;
 
-    address internal constant _HTML_REGISTRY = 0xFa11bacCdc38022dbf8795cC94333304C9f22722;
+    mapping(address user => mapping(uint256 transferId => bool)) public guardianApproved;
 
     mapping(address user => EnumerableSetLib.Uint256Set) internal _outboundTransfers;
 
@@ -99,8 +99,6 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
     mapping(address user => PendingGuardian) public pendingGuardian;
 
-    mapping(address user => mapping(uint256 transferId => bool)) public guardianApproved;
-
     mapping(address user => address) public guardians;
 
     mapping(address user => uint256) public nonces;
@@ -112,12 +110,10 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     address internal immutable htmlChunk1;
     address internal immutable htmlChunk2;
 
-    constructor(bytes memory part1, bytes memory part2) payable {
-        htmlChunk1 = SSTORE2.writeDeterministic(part1, bytes32(uint256(1)));
-        htmlChunk2 = SSTORE2.writeDeterministic(part2, bytes32(uint256(2)));
+    constructor(address _htmlChunk1, address _htmlChunk2) payable {
+        htmlChunk1 = _htmlChunk1;
+        htmlChunk2 = _htmlChunk2;
         gate = address(new SLOWGate{salt: bytes32(0)}());
-        IHtmlRegistry(_HTML_REGISTRY)
-            .setHtmlAsTarget(address(this), string(bytes.concat(part1, part2)));
     }
 
     /// @notice Returns the full SLOW dapp HTML reassembled from onchain SSTORE2 chunks.
@@ -141,11 +137,12 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
 
     // VIEWERS
 
-    /// @notice Hash matching the next `safeTransferFrom` by `from` at the current
-    /// `nonces[from]` / `lastGuardianChange[from]`. Use this for guardian co-sign of
-    /// wrapper transfers; use `predictWithdrawalId` for raw exits. Delayed `depositTo`
-    /// also produces a pending transfer id under this preimage, but deposits are not
-    /// guardian-gated — the hash is exposed only as a handle for indexers.
+    /// @notice Hash matching the next guardian-gated or delayed `safeTransferFrom` by
+    /// `from` at the current `nonces[from]` / `lastGuardianChange[from]`. Plain
+    /// transfers (no delay, no guardian) consume no id. Use this for guardian co-sign
+    /// of wrapper transfers; use `predictWithdrawalId` for raw exits. Delayed
+    /// `depositTo` also produces a pending transfer id under this preimage, but
+    /// deposits are not guardian-gated — the hash is exposed only as a handle for indexers.
     function predictTransferId(address from, address to, uint256 id, uint256 amount)
         public
         view
@@ -485,9 +482,10 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     /// otherwise refundable to the depositor via `gate.refundTip`.
     /// @dev `msg.value == amount + tip` for ETH or `tip` for ERC20. `delay != 0`,
     /// `tip != 0`, and `tip <= type(uint96).max` (the gate stores tips packed in a uint96).
-    /// If `to` sets a guardian post-deposit, tipped settlement is blocked; the tip is
-    /// recoverable via `gate.refundTip` once `clawback` (after the 30-day grace) clears
-    /// the pending entry.
+    /// If `to` has a guardian when `claimTipped` runs, tipped settlement is blocked;
+    /// the tip becomes refundable via `gate.refundTip` once the pending entry clears
+    /// by any path (`unlock` by `to`, sender `reverse` during the timelock, or sender
+    /// `clawback` after the 30-day grace).
     function depositToWithTip(
         address token,
         address to,
@@ -775,13 +773,20 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
         bytes memory image = abi.encodePacked(
             '"image":"', _createImage(token, delay, delayLabel, tokenName, tokenSymbol), '",'
         );
+        // Token trait is suppressed for ETH (zero address has no contract);
+        // mirrors the SVG which omits the address row for ETH.
+        bytes memory tokenTrait = token == address(0)
+            ? bytes("")
+            : abi.encodePacked(
+                ',{"trait_type":"Token","value":"', token.toHexStringChecksummed(), '"}'
+            );
         bytes memory attrs = abi.encodePacked(
             '"attributes":[',
             '{"trait_type":"Asset","value":"',
             escSymbol,
-            '"},{"trait_type":"Token","value":"',
-            token.toHexStringChecksummed(),
-            '"},{"trait_type":"Delay","value":"',
+            '"}',
+            tokenTrait,
+            ',{"trait_type":"Delay","value":"',
             delayLabel,
             '"},{"trait_type":"Delay (seconds)","value":',
             delay.toString(),
@@ -886,7 +891,7 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
             unicode" · ",
             delayLabel,
             "</title>",
-            '<rect width="300" height="300"/>',
+            '<rect width="300" height="300" fill="#000"/>',
             '<rect x="1" y="1" width="298" height="298" fill="none" stroke="#fff"/>',
             '<line x1="20" y1="50" x2="280" y2="50" stroke="#fff"/>',
             '<text x="20" y="35" font-family="Helvetica,Arial,sans-serif" font-size="24" fill="#fff">SLOW</text>',
@@ -918,10 +923,6 @@ contract SLOW is ERC1155, Multicallable, ReentrancyGuardTransient {
     ) public pure override(ERC1155) {
         revert BatchTransferDisabled();
     }
-}
-
-interface IHtmlRegistry {
-    function setHtmlAsTarget(address target, string calldata html) external;
 }
 
 /// @notice `claim`-only operator for keeper-driven settlement. Approve via

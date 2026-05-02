@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>send slow ᯓ➤</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 100' fill='none' stroke-linecap='square'%3E%3Crect width='120' height='100' fill='%23000'/%3E%3Cpath stroke='%23fff' d='M35 32h30M23 50h42M43 68h22M75 22l32 28-32 28' stroke-width='10'/%3E%3Cpath stroke='%23fff' d='M15 43l-8 7 8 7' stroke-width='6'/%3E%3C/svg%3E">
+<title>SLOW</title>
 <style>
 :root{--bg:#000;--fg:#fff;--bg2:#1a1a1a;--bg3:#333;--bd:#333;--eth:#ff69b4;--usdc:#2775ca;--usdt:#26a17b;--bold:#745DDF;--t:.3s ease}
 body.light{--bg:#fff;--fg:#000;--bg2:#e6e6e6;--bg3:#ccc;--bd:#ccc}
@@ -177,7 +178,7 @@ body.v-take .take{top:calc(50% + 24px)}
 <div class="take" id="take"></div>
 <div class="modal" id="amountModal"><div class="card">
 <h3>Custom Amount</h3>
-<input type="number" class="input" id="amountInput" min="0" step="any" inputmode="decimal" placeholder="0">
+<input type="text" class="input" id="amountInput" inputmode="decimal" placeholder="0">
 <button class="btn" id="amountApply">Apply</button>
 </div></div>
 <div class="modal" id="timeModal"><div class="card">
@@ -194,7 +195,7 @@ body.v-take .take{top:calc(50% + 24px)}
 <div class="summary" id="summary"></div>
 <input type="text" class="input" id="recipientInput" placeholder="Address, .eth, or .wei" autocomplete="off" spellcheck="false">
 <div class="ens" id="ens"></div>
-<label class="auto-claim"><input type="checkbox" id="autoClaimChk">🤖 Auto-claim for recipient</label>
+<label class="auto-claim"><input type="checkbox" id="autoClaimChk">🤖 Pay keeper to auto-claim</label>
 <div class="tip-pre" id="tipPre"></div>
 <button class="btn" id="confirmBtn">CONFIRM SEND</button>
 </div></div>
@@ -251,10 +252,8 @@ function kF(s){
 function keccak256(input){
   let bytes;
   if(typeof input==='string'){
-    if(input.startsWith('0x')){
-      bytes=new Uint8Array((input.length-2)/2);
-      for(let i=0;i<bytes.length;i++) bytes[i]=parseInt(input.slice(2+i*2,4+i*2),16);
-    } else bytes=new TextEncoder().encode(input);
+    bytes=new Uint8Array((input.length-2)/2);
+    for(let i=0;i<bytes.length;i++) bytes[i]=parseInt(input.slice(2+i*2,4+i*2),16);
   } else bytes=input;
   const R=136, s=new Array(25).fill(0n);
   let p=0;
@@ -312,8 +311,11 @@ function decode(types,hex){
   return out;
 }
 function parseUnits(amt,dec){
-  const [w='0',f=''] = Number(amt).toLocaleString('fullwide',{useGrouping:false,maximumFractionDigits:20}).split('.');
-  return BigInt(w||'0')*10n**BigInt(dec)+BigInt((f+'0'.repeat(dec)).slice(0,dec)||'0');
+  const s=String(amt).trim();
+  if(!/^\d+(\.\d+)?$/.test(s)) throw new Error('Invalid amount');
+  const [w,f=''] = s.split('.');
+  if(f.length>dec) throw new Error('Too many decimals');
+  return BigInt(w)*10n**BigInt(dec)+BigInt(f.padEnd(dec,'0')||'0');
 }
 function formatUnits(v,dec){
   const big=typeof v==='bigint'?v:BigInt(v);
@@ -485,7 +487,7 @@ function render(){
   qsa('.crypto').forEach(c=>tg(c,'sel', c.dataset.token===S.token));
   const customAmt = S.amount && !qs(`#amountRow [data-amount="${S.amount}"]`);
   qsa('#amountRow .opt').forEach(o=>{
-    const v=o.dataset.amount, on = v && parseFloat(v)===S.amount;
+    const v=o.dataset.amount, on = v && v===S.amount;
     tg(o,'sel', on || (o===el.customAmountOpt && customAmt));
   });
   const customDly = S.delay && !qs(`#timeRow [data-time="${S.delay}"]`);
@@ -627,7 +629,10 @@ function makeArrow(t, sym){
     e.stopPropagation();
     const N = nw();
     if(S.tab==='inbound' && N>=t.unlockTime){
-      if(confirm(`Claim ${fmtNum(t.amount)} ${sym}?`)) claim(t);
+      const msg = S.hasGuardian
+        ? `Unlock ${fmtNum(t.amount)} ${sym}? Guardian must co-sign final withdrawal off-chain.`
+        : `Claim ${fmtNum(t.amount)} ${sym}?`;
+      if(confirm(msg)) claim(t);
     } else if(S.tab==='outbound' && N<t.unlockTime){
       if(confirm(`Reverse and reclaim ${fmtNum(t.amount)} ${sym}?`)) reverseAndWithdraw(t);
     } else if(S.tab==='outbound' && N>=t.unlockTime+GRACE){
@@ -666,7 +671,7 @@ function setAccount(a){
 }
 async function connect(){
   if(!window.ethereum){
-    window.open('https://metamask.io/download.html', '_blank');
+    toast('Install a wallet to connect');
     return false;
   }
   try {
@@ -744,12 +749,12 @@ async function estimateTip(token){
   try {
     const fh = await rpc('eth_feeHistory', ['0x5', 'latest', [50]]);
     const baseFee = BigInt(fh.baseFeePerGas.at(-1));
-    const lastReward = fh.reward?.at(-1)?.[0];
-    const priority = lastReward ? BigInt(lastReward) : 1_000_000_000n;
-    const gasUnits = token === ZERO ? 80_000n : 120_000n;
-    return gasUnits * (baseFee * 2n + priority) * 3n / 2n;
+    let priority = BigInt(fh.reward?.at(-1)?.[0] || 0);
+    if(priority < 1_000_000_000n) priority = 1_000_000_000n;
+    const gasUnits = token === ZERO ? 150_000n : 220_000n;
+    return gasUnits * (baseFee * 2n + priority) * 2n;
   } catch(e){
-    return 500_000_000_000_000n;
+    return 3_000_000_000_000_000n;
   }
 }
 async function updateTipPreview(){
@@ -942,19 +947,17 @@ async function reverseAndWithdraw(t){
   finally { hideLoad(); }
 }
 async function handleConfirm(){
+  if(!S.account && !await connect()) return;
+  if(!await ensureMainnet()){ toast('Switch to Ethereum mainnet'); return; }
   if(!S.resolved){
     if(S.resolving){ toast('Resolving address...'); return; }
     if(!await resolveRecipient(el.recipientInput.value.trim())){ el.recipientInput.focus(); return; }
   }
-  if(!S.account){
-    toast('Connecting wallet...');
-    if(!await connect()) return;
-  }
-  if(!await ensureMainnet()){ toast('Switch to Ethereum mainnet'); return; }
   hideModal(el.confirmModal);
   try {
     if(S.token!==ZERO){
       const m = await tokenMeta(S.token);
+      if(m.symbol==='???') throw Error('Token metadata unavailable');
       const wei = parseUnits(S.amount, m.decimals);
       if(!await checkAllowance(S.token, S.account, wei)){
         el.approveText.textContent = `Allow SLOW to use your ${S.symbol}.`;
@@ -1004,7 +1007,7 @@ el.amountRow.addEventListener('click', e => {
     showModal(el.amountModal); el.amountInput.focus();
     return;
   }
-  S.amount = parseFloat(o.dataset.amount);
+  S.amount = o.dataset.amount;
   S.step = Math.max(S.step, 2);
   render();
 });
@@ -1016,9 +1019,9 @@ el.timeRow.addEventListener('click', e => {
   openConfirmation();
 });
 el.amountApply.onclick = () => {
-  const v = parseFloat(el.amountInput.value);
-  if(isNaN(v)||v<=0){ toast('Enter amount > 0'); return; }
-  S.amount = v;
+  const raw = el.amountInput.value.trim();
+  if(!/^\d+(\.\d+)?$/.test(raw)||!parseFloat(raw)){ toast('Enter amount > 0'); return; }
+  S.amount = raw;
   S.step = Math.max(S.step, 2);
   hideModal(el.amountModal);
   render();
@@ -1129,7 +1132,6 @@ window.ethereum?.on?.('chainChanged', id => {
   }
 });
 window.addEventListener('focus', () => { if(S.view==='take' && S.account) loadTransfers(); });
-if(!window.ethereum) el.walletBtn.textContent = 'Install Wallet';
 render();
 })();
 </script></body>

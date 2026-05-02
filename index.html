@@ -1,0 +1,16 @@
+<!doctype html><meta charset=utf-8><title>SLOW</title><link rel=icon href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 100' fill='none' stroke-linecap='square'%3E%3Crect width='120' height='100' fill='%23000'/%3E%3Cpath stroke='%23fff' d='M35 32h30M23 50h42M43 68h22M75 22l32 28-32 28' stroke-width='10'/%3E%3Cpath stroke='%23fff' d='M15 43l-8 7 8 7' stroke-width='6'/%3E%3C/svg%3E"><link rel=preconnect href=https://ethereum-rpc.publicnode.com><body>Loading SLOW from chain…<script>
+(async()=>{
+const A='0x000000000000888741B254d37e1b27128AfEAaBC',D='0x33c34ac3',
+R=['https://ethereum-rpc.publicnode.com','https://1rpc.io/eth','https://eth-pokt.nodies.app','https://gateway.tenderly.co/public/mainnet'];
+for(const u of R)try{
+const j=await(await fetch(u,{method:'POST',headers:{'content-type':'application/json'},body:`{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"${A}","data":"${D}"},"latest"]}`})).json();
+if(!j.result)continue;
+const n=parseInt(j.result.slice(66,130),16)*2,
+h=new TextDecoder().decode(Uint8Array.from(j.result.slice(130,130+n).match(/../g),b=>parseInt(b,16)));
+const d=new DOMParser().parseFromString(h,'text/html');
+document.documentElement.replaceWith(document.adoptNode(d.documentElement));
+document.querySelectorAll('script').forEach(o=>{const n=document.createElement('script');for(const a of o.attributes)n.setAttribute(a.name,a.value);n.text=o.textContent;o.replaceWith(n)});return;
+}catch(e){}
+document.body.textContent='Failed to load SLOW from chain.';
+})()
+</script>

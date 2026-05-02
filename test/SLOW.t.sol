@@ -6,6 +6,7 @@ import {Test, Vm} from "../lib/forge-std/src/Test.sol";
 import {console} from "forge-std/console.sol";
 import {Base64} from "@solady/src/utils/Base64.sol";
 import {LibString} from "@solady/src/utils/LibString.sol";
+import {SSTORE2} from "@solady/src/utils/SSTORE2.sol";
 
 contract SLOWTest is Test {
     SLOW internal slow;
@@ -30,9 +31,13 @@ contract SLOWTest is Test {
     event TransferPending(uint256 indexed transferId, uint96 indexed delay);
     event TransferReversed(uint256 indexed transferId);
 
+    function _deploySlow(bytes memory p1, bytes memory p2) internal returns (SLOW) {
+        return new SLOW(SSTORE2.write(p1), SSTORE2.write(p2));
+    }
+
     function setUp() public payable {
         vm.createSelectFork(vm.rpcUrl("main")); // Ethereum mainnet fork.
-        slow = new SLOW("", "");
+        slow = _deploySlow("", "");
         token = new MockERC20("Test Token", "TEST", 18);
 
         owner = address(this);
@@ -1046,11 +1051,11 @@ contract SLOWTest is Test {
 
     // ON-CHAIN HTML TESTS
 
-    // The constructor accepts arbitrary bytes; html() concatenates and returns them.
+    // The constructor accepts pre-deployed SSTORE2 chunks; html() concatenates them.
     function testHtmlRoundtrip() public {
         bytes memory part1 = bytes("<html><body>");
         bytes memory part2 = bytes("hello slow</body></html>");
-        SLOW dapp = new SLOW(part1, part2);
+        SLOW dapp = _deploySlow(part1, part2);
         bytes memory got = bytes(dapp.html());
         bytes memory expected = bytes.concat(part1, part2);
         assertEq(keccak256(got), keccak256(expected));
@@ -1059,7 +1064,7 @@ contract SLOWTest is Test {
 
     // Empty payloads work fine (used in protocol-only tests).
     function testHtmlEmpty() public {
-        SLOW dapp = new SLOW("", "");
+        SLOW dapp = _deploySlow("", "");
         assertEq(bytes(dapp.html()).length, 0);
     }
 
@@ -1075,7 +1080,7 @@ contract SLOWTest is Test {
         assertLt(part1.length, 24_575);
         assertLt(part2.length, 24_575);
 
-        SLOW dapp = new SLOW(part1, part2);
+        SLOW dapp = _deploySlow(part1, part2);
         bytes memory got = bytes(dapp.html());
         assertEq(got.length, full.length);
         assertEq(keccak256(got), keccak256(full));
@@ -1819,24 +1824,6 @@ contract SLOWTest is Test {
         assertEq(slow.balanceOf(user1, id), 0, "no wrapper minted");
     }
 
-    // CONSTRUCTOR REGISTRATION
-
-    function testHtmlRegistryRegisteredOnDeploy() public {
-        address REGISTRY = 0xFa11bacCdc38022dbf8795cC94333304C9f22722;
-        MockHtmlRegistry tpl = new MockHtmlRegistry();
-        vm.etch(REGISTRY, address(tpl).code);
-
-        bytes memory part1 = bytes("<html>");
-        bytes memory part2 = bytes("</html>");
-        SLOW newSlow = new SLOW(part1, part2);
-
-        assertEq(MockHtmlRegistry(REGISTRY).lastTarget(), address(newSlow));
-        assertEq(
-            keccak256(bytes(MockHtmlRegistry(REGISTRY).lastHtml())),
-            keccak256(bytes.concat(part1, part2))
-        );
-    }
-
     function testReverseEmitsEvent() public {
         vm.prank(user1);
         uint256 transferId = slow.depositTo{value: AMOUNT}(address(0), user2, 0, DELAY, "");
@@ -1846,6 +1833,37 @@ contract SLOWTest is Test {
 
         vm.prank(user1);
         slow.reverse(transferId);
+    }
+
+    // For ETH (token == address(0)) the Token trait is suppressed because the
+    // zero address is not a meaningful contract reference; Asset = "ETH" is
+    // sufficient identification. Mirrors the SVG which omits the address row.
+    function testUriOmitsTokenTraitForEth() public view {
+        uint256 id = calculateId(address(0), 1 days);
+        string memory u = slow.uri(id);
+
+        bytes memory uriBytes = bytes(u);
+        bytes memory prefix = bytes("data:application/json;base64,");
+        bytes memory payload = new bytes(uriBytes.length - prefix.length);
+        for (uint256 i = 0; i < payload.length; i++) {
+            payload[i] = uriBytes[prefix.length + i];
+        }
+        string memory json = string(Base64.decode(string(payload)));
+
+        // Asset, Delay, and Delay (seconds) traits are present for ETH.
+        assertTrue(LibString.contains(json, '"trait_type":"Asset","value":"ETH"'));
+        assertTrue(LibString.contains(json, '"trait_type":"Delay","value":"1 day"'));
+        assertTrue(LibString.contains(json, '"trait_type":"Delay (seconds)","value":86400'));
+
+        // Token trait must NOT be present, and the zero address must not leak.
+        assertFalse(
+            LibString.contains(json, '"trait_type":"Token"'),
+            "Token trait should be omitted for ETH"
+        );
+        assertFalse(
+            LibString.contains(json, "0x0000000000000000000000000000000000000000"),
+            "zero address should not appear in JSON"
+        );
     }
 
     function testUriIncludesAttributesAndPerIdName() public view {
@@ -3414,17 +3432,6 @@ contract SLOWTest is Test {
         vm.prank(user1);
         vm.expectRevert(SLOW.InvalidAmount.selector);
         slow.withdrawFrom(user1, user2, id, 0);
-    }
-}
-
-// Records calls so testHtmlRegistryRegisteredOnDeploy can assert the constructor pinged it.
-contract MockHtmlRegistry {
-    address public lastTarget;
-    string public lastHtml;
-
-    function setHtmlAsTarget(address target, string calldata h) external {
-        lastTarget = target;
-        lastHtml = h;
     }
 }
 
