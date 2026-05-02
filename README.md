@@ -1,205 +1,257 @@
 # [SLOW](https://github.com/z0r0z/slow)  [![License: AGPL-3.0-only](https://img.shields.io/badge/License-AGPL-black.svg)](https://opensource.org/license/agpl-v3/) [![solidity](https://img.shields.io/badge/solidity-%5E0.8.34-black)](https://docs.soliditylang.org/en/v0.8.34/) [![Foundry](https://img.shields.io/badge/Built%20with-Foundry-000000.svg)](https://getfoundry.sh/)
 
-## Deployment
-
-[`0x000000000000888741B254d37e1b27128AfEAaBC`](https://contractscan.xyz/contract/0x000000000000888741B254d37e1b27128AfEAaBC)
-
 ## What is SLOW?
 
-SLOW is a protocol that adds safety mechanisms to token transfers through two powerful features:
+SLOW is an ERC-1155 wrapper around ETH and ERC-20 tokens that adds two opt-in safety mechanisms to every transfer:
 
-1. **Timelock**: Enforces a waiting period before recipients can access transferred tokens
-2. **Guardian**: Optional trusted party that can approve or block transfers
+1. **Timelock** — recipients have to wait before they can extract the underlying.
+2. **Guardian** — an optional cosigner who must approve every outflow.
 
-Think of it as a security-enhanced way to transfer ETH and ERC20 tokens with built-in protection mechanisms.
+Wrap once, then send, hold, and reverse with safety rails. Any token, any delay, any time.
 
-## Why Use SLOW?
+## Try it
 
-- **Prevent Theft**: Even if your keys are compromised, attackers must wait for the timelock to expire
-- **Reverse Mistakes**: Cancel erroneous transfers before the timelock expires
-- **Secure High-Value Transactions**: Add guardian approval for extra security
-- **Schedule Transfers**: Set timelock periods from seconds to days or longer
+- **Contract:** [`0x000000000000888741B254d37e1b27128AfEAaBC`](https://contractscan.xyz/contract/0x000000000000888741B254d37e1b27128AfEAaBC)
+- **Onchain dapp (served by the contract via `html()`):** https://0x000000000000888741b254d37e1b27128afeaabc.w4eth.io/
+- **Hosted dapp:** https://slow.wei.is/
 
-## Key Features
+The contract embeds its own frontend in two SSTORE2 chunks; `w4eth.io` resolves the on-chain HTML over the web for convenience, but the dapp can be reconstructed by anyone calling `html()` directly.
 
-- Wrap and send ETH or any ERC20 token
-- Set custom timelock periods for each transfer
-- Appoint a guardian to approve sensitive transfers
-- Reverse pending transfers before timelock expiry
-- One-step `claim` after expiry: burn the wrapped position and pay the underlying in a single tx
-- 30-day `clawback` window for senders when a recipient never claims (lost keys, dead address)
-- Visually track tokens with dynamic SVG renders
-- Multicall support for batched operations
-- Onchain dapp: the contract serves its own UI via `html()` — no IPFS, no gateway, no NPM
+## Why use SLOW?
 
-## How It Works
+- **Reverse mistakes.** Sent to the wrong address? Cancel before the timelock expires.
+- **Buy time on a key compromise.** Funds in a pending transfer can't be extracted until the timelock elapses — long enough for an issuer freeze (USDC, USDT) or your own response.
+- **Cosign sensitive transfers.** Set a guardian (a cold wallet, a trusted friend) to approve every outflow.
+- **Sponsor delivery.** Attach a tip alongside the deposit and let any keeper push the funds — the recipient never needs ETH for gas.
+- **Recover dead sends.** A 30-day clawback window catches transfers to lost or never-claimed addresses.
 
-### Core Concepts
+## How it works
 
-SLOW uses the ERC1155 token standard to represent wrapped tokens with timelock and guardian protections:
+### Wrap → wait → settle
+
+Each SLOW token is an ERC-1155 position whose id encodes both the underlying token and a timelock delay. Every account has a wrapper balance and a separate per-id `unlockedBalance`. Outflows draw only from `unlockedBalance`; the timelock is the bridge between the two.
+
+```
+| 96 bits  |        160 bits      |
+|  delay   |    token address     |     ← token id (delay in seconds, 0x0 for ETH)
+```
+
+A `depositTo` mints the wrapper to the recipient but parks the credit in a `pendingTransfer` until the timelock expires. After expiry the recipient (or an operator) settles. Before expiry the sender can reverse. Long after expiry, if no one settled, the sender can clawback.
 
 ![image](https://github.com/user-attachments/assets/ddaa86f0-a4a0-4cfb-82a4-9cf670fcae47)
 
-1. **Tokenization**: Each base token (ETH or ERC20) is wrapped into a SLOW token
-2. **Token ID Encoding**: The token ID encodes both the token address and timelock period
-3. **Balance States**: Token balances exist in two states - locked and unlocked
-4. **Transfer Flow**: Transfers go through a predictable lifecycle with safety checks
-
-### Typical User Flow
-
-```mermaid
-graph TD
-    A[User deposits tokens] --> B[Tokens wrapped as SLOW tokens]
-    B --> C{Set timelock?}
-    C -->|Yes| D[Create pending transfer with timelock]
-    C -->|No| E[Tokens immediately unlocked]
-    D -->|Wait for timelock| F[Manually unlock tokens]
-    D -->|Before expiry| G[Optional: Reverse transfer]
-    F --> H[Tokens available for withdrawal]
-    E --> H
-    H --> I[Withdraw tokens to recipient]
-```
-
-### Transfer States Visualization
+### Lifecycle
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Deposit: User deposits tokens
-    Deposit --> Locked: With timelock
-    Deposit --> Unlocked: Without timelock
-    Locked --> PendingTransfer: During timelock period
-    PendingTransfer --> Reversed: Before timelock expires
-    PendingTransfer --> ReadyToUnlock: After timelock expires
-    ReadyToUnlock --> Unlocked: User calls unlock()
-    Unlocked --> Withdrawn: User withdraws tokens
+    [*] --> Pending: depositTo / safeTransferFrom (delay > 0)
+    [*] --> Unlocked: depositTo (delay == 0)
+    Pending --> Reversed: reverse() before expiry
+    Pending --> Unlocked: unlock() after expiry
+    Pending --> Settled: claim() / gate.claim() after expiry
+    Pending --> Clawed: clawback() after expiry + 30d
+    Unlocked --> Withdrawn: withdrawFrom()
     Reversed --> [*]
+    Settled --> [*]
+    Clawed --> [*]
     Withdrawn --> [*]
 ```
 
-## Practical Examples
-
-### Example 1: Basic Timelock Transfer
-
-Alice wants to send 1 ETH to Bob with a 24-hour timelock:
-
-1. Alice calls `depositTo` with parameters:
-   - token: 0x0000000000000000000000000000000000000000 (ETH)
-   - to: Bob's address
-   - amount: 1 ETH
-   - delay: 86400 (seconds in 24 hours)
-
-2. The contract:
-   - Creates a unique transferId
-   - Records a pending transfer with the current timestamp
-   - Mints a SLOW token to Bob representing the locked 1 ETH
-
-3. After 24 hours, Bob calls `unlock(transferId)` to move the tokens to his unlocked balance
-
-4. Bob can now call `withdrawFrom` to get the actual ETH
-
-### Example 2: Guardian Protected Transfer
-
-Charlie sets up a guardian for extra security:
-
-1. Charlie calls `setGuardian(guardianAddress)` to designate a trusted guardian
-
-2. When Charlie wants to transfer tokens, the transfer requires guardian approval
-
-3. Charlie initiates a transfer to Dave with `safeTransferFrom`
-
-4. The guardian calls `approveTransfer(Charlie's address, transferId)` to approve
-
-5. If the transfer had a timelock, Dave still needs to wait and then unlock it
-
-6. Without guardian approval, the transfer remains pending indefinitely
-
-### Example 3: Reversing a Mistaken Transfer
-
-Emma accidentally sends tokens to the wrong address:
-
-1. Emma initiates a transfer with a 48-hour timelock
-
-2. Emma realizes the mistake and calls `reverse(transferId)` before the timelock expires
-
-3. The tokens are returned to Emma's address
-
-## Key Functions
-
-### Core Transfer Functions
-
-- **`depositTo(token, to, amount, delay, data)`** - Deposit tokens and create a timelock
-- **`withdrawFrom(from, to, id, amount)`** - Withdraw unlocked tokens
-- **`safeTransferFrom(from, to, id, amount, data)`** - Transfer tokens with security checks
-- **`unlock(transferId)`** - Permissionless: move an expired pending transfer into the recipient's unlocked balance
-- **`claim(transferId)`** - Recipient (or operator): one-step burn-and-pay to underlying after expiry
-- **`reverse(transferId)`** - Sender (or operator): cancel a pending transfer before timelock expiry
-- **`clawback(transferId)`** - Sender (or operator): recover an unsettled transfer 30 days past expiry
-
-### Guardian Management
-
-- **`setGuardian(guardian)`** - Designate an address as your guardian (self-applied 2FA)
-- **`approveTransfer(from, transferId)`** - Guardian approves a pending transfer
-
-### View Helpers
-
-- **`predictTransferId(from, to, id, amount)`** - Compute the next transferId for a (from, to, id, amount) tuple
-- **`canReverseTransfer(transferId)`** - `(canReverse, reason)` preflight for the reverse window
-- **`isGuardianApprovalNeeded(user, to, id, amount)`** - Whether the user's next outflow requires guardian approval
-- **`canChangeGuardian(user)`** - `(canChange, cooldownEndsAt)` for the guardian rotation window
-- **`getOutboundTransfers(user)` / `getInboundTransfers(user)`** - All pending transferIds for a user
-- **`encodeId(token, delay)` / `decodeId(id)`** - Token-id <-> (address, delay) helpers
-- **`html()`** - Returns the dapp HTML reassembled from on-chain SSTORE2 chunks
-
-## Technical Details
-
-### Token ID Structure
-
-Each SLOW token ID encodes two pieces of information:
-- Lower 160 bits: The underlying token address (0x0 for ETH)
-- Upper 96 bits: The timelock delay in seconds
+### Windows
 
 ```
-|---- 96 bits ----|---- 160 bits ----|
-|     Timelock    |   Token Address  |
+            t₀                              expiry              expiry + 30d
+   ─────────●─────────────────────────────────●───────────────────●────────────►
+                ←────── reverse() ──────→     ←──── unlock() / claim() ───────→
+                  sender's recovery window     recipient (or operator) settles
+                                                                   ←─ clawback() ─→
+                                                                    sender's last resort
 ```
 
-### Transfer ID Generation
+Reverse and clawback are mutually exclusive: reverse is a pre-expiry primitive, clawback is post-expiry-plus-30-days, and any settlement (`unlock` / `claim`) in between disables both.
 
-Each transfer gets a unique ID generated from:
+## Use cases
+
+### 1. Reversible payments
+
+Send with a delay. Bob sees the wrapper immediately but can only extract the underlying after the timelock. Alice has the full window to `reverse` if she catches an error.
+
+### 2. Hot-wallet hardening
+
+Wrap funds you hold long-term with a delay. A stolen key cannot drain the underlying for the full window — buying time for an issuer freeze (USDC, USDT) or for you to act.
+
+### 3. Self-2FA via guardian
+
+Designate a separate cold wallet as your guardian. Every outflow then requires the cold wallet's `approveTransfer`. Rotating an active guardian stages a 1-day veto window — a stolen key cannot quietly remove the guardian, because the cold wallet sees `GuardianChangeProposed` and calls `cancelGuardianChange`.
+
+```mermaid
+sequenceDiagram
+    participant User as User (hot wallet)
+    participant SLOW
+    participant Guardian as Guardian (cold wallet)
+
+    User->>SLOW: setGuardian(newGuardian)
+    Note over SLOW: stages PendingGuardian<br/>effectiveAt = now + 1 day
+    SLOW-->>Guardian: GuardianChangeProposed event
+
+    alt Veto inside the 1-day window
+        Guardian->>SLOW: cancelGuardianChange(user)
+        Note over SLOW: pending cleared<br/>current guardian stays
+    else Window elapses
+        Note over SLOW: ...1 day passes...
+        User->>SLOW: commitGuardian(user)
+        Note over SLOW: new guardian active<br/>lastGuardianChange bumped<br/>dangling approvals invalidated
+    end
+```
+
+### 4. Sponsored / gasless delivery
+
+Use `depositToWithTip` to attach an ETH tip alongside the deposit. Any keeper can call `gate.claim(transferId)` after expiry to push the funds; the keeper takes the tip. The recipient never needs gas. If the transfer cleared by a non-gate path (recipient-direct claim, sender reverse, sender clawback), the depositor recovers the tip via `gate.refundTip`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Sender
+    participant SLOW
+    participant Gate
+    participant Keeper
+    participant Recipient
+
+    Sender->>SLOW: depositToWithTip(token, recipient, amount, delay, tip)
+    SLOW->>Gate: recordTip{value: tip}
+    Note over SLOW: pending transfer created
+    Note over Sender,Recipient: ...timelock elapses...
+    Keeper->>Gate: claim(transferId)
+    Gate->>SLOW: claimTipped(transferId)
+    SLOW->>Recipient: pays underlying
+    Gate->>Keeper: pays tip
+```
+
+### 5. Lost-recipient recovery
+
+If you send to an address that never claims (compromised key, dead wallet), `clawback` returns the funds to you 30 days after expiry — provided the transfer is still pending.
+
+### Holding SLOW long-term: fuse vs. vault
+
+A pure timelock is a **one-shot fuse, not a perpetual lock.** Once `delay` expires on a self-deposited position, anyone with the key can `unlock` then `withdrawFrom` in two txs. To hold SLOW long-term as a vault, pair the delay with a **guardian** — that's the durable second factor. With a guardian set, even a fully compromised hot wallet cannot extract the wrapped underlying.
+
+## Functions
+
+### Deposit
+
+| Function | Purpose |
+| --- | --- |
+| `depositTo(token, to, amount, delay, data)` | Wrap and create a pending transfer (or unlock immediately if `delay == 0`). |
+| `depositToWithTip(token, to, amount, delay, tip, data)` | Same, plus a relayer tip held by the gate. Requires `delay != 0`, `tip != 0`, `tip <= type(uint96).max`. |
+
+### Settle / move
+
+| Function | Purpose |
+| --- | --- |
+| `unlock(transferId)` | Recipient or operator: park an expired pending into `unlockedBalances[to]`. |
+| `claim(transferId)` | Recipient or operator: one-step settle to underlying. Reverts when `to` has a guardian. |
+| `withdrawFrom(from, to, id, amount)` | Burn unlocked wrapper and pay underlying. Guardian-gated if `from` has one. |
+| `safeTransferFrom(from, to, id, amount, data)` | Move unlocked wrapper. Re-locks if id has a delay; guardian-gated if `from` has one. |
+| `reverse(transferId)` | Sender or operator: cancel a pending transfer before expiry. |
+| `clawback(transferId)` | Sender or operator: recover a pending transfer 30 days past expiry. |
+
+### Guardian
+
+| Function | Purpose |
+| --- | --- |
+| `setGuardian(newGuardian)` | First-time set is immediate; rotating an active guardian stages a 1-day veto window. |
+| `cancelGuardianChange(user)` | User or active guardian: veto a pending rotation during the window. |
+| `commitGuardian(user)` | Permissionless: finalize a rotation after the window. |
+| `approveTransfer(from, transferId)` | Guardian only: approve a precomputed transfer or withdrawal id. |
+| `revokeApproval(from, transferId)` | Guardian only: retract a single approval. |
+
+### Gate (sponsored delivery)
+
+The gate is a CREATE2-deployed `claim`-only operator. Approve via `setApprovalForAll(slow.gate(), true)` to opt into keeper-driven settlement.
+
+| Function | Purpose |
+| --- | --- |
+| `gate.claim(transferId)` | Settle one transfer; pay tip if any. Without a tip, requires recipient operator approval on the gate. |
+| `gate.claimMany(ids[])` | Atomic batch settle. |
+| `gate.refundTip(transferId)` | Depositor recovers the tip after the transfer cleared by a non-gate path. |
+
+### View helpers
+
+| Function | Purpose |
+| --- | --- |
+| `predictTransferId(from, to, id, amount)` | Hash of the next outbound transfer / transfer-approval preimage. |
+| `predictWithdrawalId(from, to, id, amount)` | Hash of the next withdrawal-approval preimage (distinct op-type). |
+| `canReverseTransfer(transferId)` | `(canReverse, reason)` preflight. |
+| `isGuardianApprovalNeeded(user, to, id, amount)` | Does the next `safeTransferFrom` need cosign? |
+| `isWithdrawalApprovalNeeded(user, to, id, amount)` | Does the next `withdrawFrom` need cosign? |
+| `getOutboundTransfers(user)` / `getInboundTransfers(user)` | All pending transfer ids. |
+| `outboundTransferCount` / `outboundTransferAt` (and inbound equivalents) | Paginated access — preferred for on-chain consumers. |
+| `encodeId(token, delay)` / `decodeId(id)` | Token-id helpers. |
+| `html()` | Returns the dapp HTML reassembled from on-chain SSTORE2 chunks. |
+
+## Technical details
+
+### Transfer id
+
 ```solidity
-keccak256(abi.encodePacked(from, to, id, amount, nonces[from]))
+keccak256(abi.encodePacked(
+    from, to, id, amount,
+    nonces[from], lastGuardianChange[from], opType
+))
 ```
 
-This ensures each transfer can be uniquely identified and tracked.
+`opType` is `0` for transfers/deposits and `1` for withdrawals — this prevents a guardian approval for one op being consumed as the other. `lastGuardianChange[from]` is mixed in so a guardian rotation invalidates every dangling approval at once.
 
-## Security Considerations
+### Op-type split
 
-- **Guardian Cooldown**: 1 day cooldown between guardian changes prevents flash attacks
-- **Reversible Transfers**: Only possible before timelock expiry
-- **Clawback Grace**: Sender can `clawback` only after timelock expiry + 30 days, and only while the pending entry still exists — anyone (recipient, operator, or any keeper) can call permissionless `unlock` during the grace window to disable clawback
-- **Reentrancy Protection**: External-facing functions protected against reentrancy attacks (transient-storage guard)
-- **Balance Tracking**: Strict accounting of locked vs. unlocked balances
-- **Unsupported Tokens**: Fee-on-transfer and rebasing tokens (e.g. stETH) are not supported — the wrapper assumes 1:1 accounting between deposited and withdrawable amount. Wrap rebasing tokens to their non-rebasing equivalent (e.g. wstETH) before depositing.
+Guardian approvals come in two flavors with distinct preimages:
 
-## Getting Started
+- **Transfer approval** — for `safeTransferFrom` (use `predictTransferId`).
+- **Withdrawal approval** — for `withdrawFrom` (use `predictWithdrawalId`).
 
-Run: `curl -L https://foundry.paradigm.xyz | bash && source ~/.bashrc && foundryup`
+Approving one will not satisfy the other. Guardians must still verify intent off-chain.
 
-Build the foundry project with `forge build`. Run tests with `forge test`. Measure gas with `forge snapshot`. Format with `forge fmt`.
+### Multicall and SVG
 
-The dapp has two parallel test layers, both vanilla `node` (no NPM):
+- `Multicallable` (Solady) lets clients batch read/write calls; the inherited implementation reverts on nonzero `msg.value`, so payable deposits cannot be smuggled into a batch to drain the pool via `msg.value` reuse.
+- Every id has a generated SVG render exposed via `uri(id)` — useful for marketplace and wallet display.
 
-- **`node test/slow_html.test.mjs`** — unit tests for the deterministic helpers (keccak256, namehash, ABI codec, parse/formatUnits, id codec, every `SEL` selector). Reads `SLOW.html`, evaluates the inline IIFE in a sandboxed scope, asserts against canonical vectors crosschecked with `cast keccak` and `cast sig`.
-- **`node test/slow_html.e2e.test.mjs`** — full integration tests. Spawns `anvil`, deploys SLOW, drives the dapp's actual flow functions (`deposit`, `claim`, `reverseAndWithdraw`, `clawback`, `loadTransfers`) against the live contract, asserts on-chain state and dapp state match. Requires `anvil` on PATH and a current `forge build`.
+## Security considerations
 
-`SLOW.html` is not modified by either runner — both extract the IIFE in memory and rewrite only sandbox-local references.
+- **No admin, no upgrades, no fees.** The contract has no owner, no pausable, and no upgrade path. Behavior is fixed at deployment.
+- **Guardian veto window.** Rotating an active guardian stages a 1-day delay. Either party can `cancelGuardianChange` during the window; only `commitGuardian` works after. The window is the decision period, not an indefinite veto.
+- **Reverse window.** Only before timelock expiry. A reverse from the compromised key credits `unlockedBalances` back to the same compromised account, so `reverse` alone is not a recovery primitive — it relies on the sender's key being safe.
+- **Clawback grace.** 30 days post-expiry, and only if the transfer is still pending. Recipient or any operator can `unlock` or `claim` during the grace window to settle and disable clawback.
+- **Wallet display vs. spendability.** ERC-1155 wallets and marketplaces see the full wrapper balance, including amounts still in pending transfers. `unlockedBalances[user][id]` is the source of truth for what is actually spendable.
+- **Reentrancy.** Transient-storage guard on every external entry point.
+- **ERC-1155 deviations.** `safeBatchTransferFrom` is disabled; zero-amount transfers revert. `supportsInterface` still claims ERC-1155 — treat this as ERC-1155-derived rather than fully compliant.
+- **Inbound-set spam.** Anyone can deposit dust to your inbound set. On-chain consumers should paginate via `inboundTransferCount` + `inboundTransferAt(i)` rather than calling `getInboundTransfers`.
+- **Unsupported tokens.** Fee-on-transfer and rebasing tokens (e.g. stETH) break the wrapper's 1:1 accounting. Wrap rebasing assets to their non-rebasing equivalent (e.g. wstETH) before depositing.
+- **Gate cannot redirect funds.** The `claim` path pins payout to `pt.to`; the gate has no path to `safeTransferFrom` or `withdrawFrom`. Keepers can only choose *when* to settle, not *where* funds go.
 
-## Blueprint
+## Build & test
+
+```sh
+curl -L https://foundry.paradigm.xyz | bash && source ~/.bashrc && foundryup
+forge build
+forge test
+```
+
+`forge snapshot` for gas. `forge fmt` to format.
+
+Dapp tests run on vanilla Node — no NPM:
+
+- `node test/slow_html.test.mjs` — unit tests for the dapp's deterministic helpers (keccak256, namehash, ABI codec, parse/formatUnits, id codec, every selector). Crosschecked against `cast keccak` / `cast sig`.
+- `node test/slow_html.e2e.test.mjs` — end-to-end. Spawns `anvil`, deploys SLOW, drives the dapp's flow functions against the live contract, asserts on-chain state matches dapp state. Requires `anvil` on PATH and a current `forge build`.
+
+`SLOW.html` is read in memory by both runners — never modified.
+
+## Layout
 
 ```txt
-SLOW.html       — onchain dapp (served by the deployed contract via html())
+SLOW.html       — onchain dapp (served via html())
 src/
-└─ SLOW.sol     — protocol contract
+└─ SLOW.sol     — protocol contract (also defines SLOWGate)
 test/
 └─ SLOW.t.sol   — full test suite (mainnet fork)
 lib/
